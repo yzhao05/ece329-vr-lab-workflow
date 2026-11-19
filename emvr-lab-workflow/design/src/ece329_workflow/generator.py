@@ -569,7 +569,7 @@ def _formula_brief_object_inventory(
                 )
             ),
             "student_interaction": (
-                "移动到选定观察位置并记录当前读数或场线形态"
+                "按测量方案在指定位置读取并记录观测结果"
                 if observation_tool
                 else (
                     "鼠标左键或VR扳机选中并抓取，拖动改变位置；"

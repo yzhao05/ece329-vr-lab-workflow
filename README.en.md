@@ -2,6 +2,8 @@
 
 [简体中文教程](README.md) · English
 
+Already installed? Go to [update a Git clone](#update-git) or [update a ZIP download](#update-zip).
+
 Follow one example from start to finish: how does current affect the magnetic field at the center of a long solenoid? You will set up the project, discuss the experiment with an agent, export the design, and optionally build it in Unity. Complete steps 1–3 once. On later visits, start at step 4. In step 3, follow only the instructions for your desktop app.
 
 ## 1. Download the project and open its folder
@@ -154,6 +156,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ## 6. Hand the plan to Builder
 
+On Windows, open the short project path returned by the agent in Unity Hub (for example `Z:\UnityProject`). To resume an existing run, ask the agent to run `builder.py "PACK" unity-project` for the original Builder workspace and continue with the same lab ID. The original workspace holds the gate records.
+
 1. **For the design you just finished**, say “Start building from the version I just confirmed and exported.” Check the design version, Builder workspace, and current gate reported by the agent.
 2. **If you already have a plan**, you can come straight here after step 3. Attach your chosen plan to the project chat, identify the version, and say “Go directly to Builder using this attachment.” The agent reviews the requirements in that plan. If there are several versions, confirm which one to use.
 3. At each gate, review the evidence and anything awaiting your decision. Request a specific change or confirm the result. When asked to inspect the scene, use Unity Hub to open `UnityProject` in the run workspace identified by the agent and follow that gate's instructions. After Gate 6 scene acceptance, the agent archives the selected Gate 5B code. After both Gate 8 handbooks are approved for a linked design, it records problems and fixes in the [knowledge updates directory](knowledge/newknowledge/).
@@ -188,3 +192,65 @@ From the repository root on Windows, use the commands below one at a time. On ma
 From the repository root, use the interpreter from step 2 to install `"./emvr-lab-workflow/design[test,harness]"` with `-m pip install`, then run `-m pytest -q`. Offline tests can use `ECE329_GENERATOR=rule` and `ECE329_TEST_HARNESS_RUNTIME=1`. With Playwright and Chromium installed, run `node emvr-lab-workflow/tests/viewer.cjs` to check the viewer.
 
 </details>
+
+<a id="update"></a>
+
+## 9. Update an existing installation and resume your experiment
+
+Note your current `design_id`. If you have started Builder, also note the `lab_id`, current gate, and the original Builder workspace’s full path. Let the agent finish its current action, then save and close the Unity Editor. Ask the agent to stop this project's local progress viewer before updating.
+
+<a id="update-git"></a>
+
+### 9A. Update a Git clone
+
+1. Open a terminal in the original repository root and run these commands one at a time. The first should show this project's root, the second should point to the project repository, and the third shows your branch and local changes. [Project repository](https://github.com/yzhao05/ece329-vr-lab-workflow)
+
+   ```sh
+   git rev-parse --show-toplevel
+   git remote get-url origin
+   git status --short --branch
+   ```
+
+2. On `main`, pull the update in the same directory. If you edited tracked files, back up or commit your changes first. If you are on a personal branch, save your work and switch back to `main` before running these commands.
+
+   ```sh
+   git pull --ff-only origin main
+   git log -1 --oneline
+   ```
+
+   After a successful pull, the second command shows your latest local commit. If Git says files would be overwritten or the branches have diverged, stop here and resolve that message while preserving your local work.
+
+3. Keep your existing experiment directories and `.venv`, then [verify the update](#update-check).
+
+<a id="update-zip"></a>
+
+### 9B. Update a ZIP download or a folder from your instructor
+
+1. Select `main` in the [project repository](https://github.com/yzhao05/ece329-vr-lab-workflow) and choose **Code → Download ZIP**, or get the updated ZIP from your instructor. Extract it into a separate temporary folder. Locate the directory that contains `README.md`, `emvr-lab-workflow`, and `web` together.
+2. Close terminals and agent project windows using the old folder. From its parent directory, rename the old folder as a backup (for example, append `-backup`). Place the newly extracted project root at the **exact original path**. This keeps existing Builder workspace paths and Unity Hub project locations usable.
+3. Copy **your local experiment data** from the backup to the same relative locations in the new installation. Copy the entire `emvr-lab-workflow/state/` directory, or restore `state/` at the project root if that was your previous location. If you created standalone runs under `reusable-code/EMVR_Blind_BuilderPack/RebuildWorkspaces/`, copy those run directories too. Continue using the original paths for external workspaces and custom state directories.
+4. Merge any personal additions in `knowledge/newknowledge/`, `reusable-code/newcode/`, or other directories where you added material. Compare files with matching names before replacing them. Restore your local `.env` configuration if needed. In the new root, follow step 2 to create a fresh `.venv`, then step 3 to create the skill entry for your client. Keep your backup until you have verified your progress.
+
+If your custom state directory, viewer data directory, or standalone Builder workspace was inside the old project folder, restore it from the backup at the same relative path.
+
+<a id="update-check"></a>
+
+### 9C. Verify the update and resume
+
+1. For a Git clone, run the two lines for your operating system in the existing environment. If you just installed the engine and ran the knowledge query in step 2 for a ZIP update, go straight to the next item.
+
+   **Windows · PowerShell**
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install ./emvr-lab-workflow/design
+   .\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
+   ```
+
+   **macOS · Terminal**
+
+   ```sh
+   .venv/bin/python -m pip install ./emvr-lab-workflow/design
+   .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
+   ```
+
+2. Once the query returns `course` and `formulas`, open a fresh agent chat in the updated project, select the skill, and say “Resume experiment [original design_id], open its progress page, and tell me the current gate and pending task.” For standalone Builder, say “Resume [lab_id] in the original workspace at [full path].” Check that the ID, gate, and pending task match your previous session. On Windows, use the short path returned by the agent when you next open that workspace in Unity.

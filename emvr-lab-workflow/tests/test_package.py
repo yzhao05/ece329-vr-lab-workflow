@@ -60,6 +60,7 @@ def test_agent_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("PYTHONIOENCODING", "gbk")
     created = cli(tmp_path, "create", "探索长螺线管中心的磁场与电流")
     key = created["design_id"]
+    assert "Gate 1/7" in created["status_line"]
     assert created["stage_payload"]["emvr_formula_phase"] == "FORMULA_CANDIDATES_PRESENTED"
     assert "interpretation" not in created and "design_access_token" not in created
     action = {"type": "SELECT_EMVR_FORMULAS", "content": {
@@ -71,6 +72,7 @@ def test_agent_flow(tmp_path, monkeypatch):
     saved = SQLiteSessionStore(tmp_path / "private/design.sqlite3").get(key)
     assert saved.history[-1]["user_message"] == request["message"]
     assert turn["revision"] > created["revision"]
+    assert "Gate 1/7" in turn["status_line"]
     assert turn["stage_payload"]["emvr_formula_phase"] != "FORMULA_CANDIDATES_PRESENTED"
     assert cli(tmp_path, "turn", key, "--stdin-json", stdin=request)["revision"] == turn["revision"]
     view = json.loads((tmp_path / "public/data" / (key + ".json")).read_text(encoding="utf-8"))
@@ -104,6 +106,65 @@ def test_directory_publication_retries_a_windows_lock(tmp_path, monkeypatch):
     assert (target / "ready.txt").read_text() == "ready"
 
 
+def test_course_identity_is_one_discussion(tmp_path):
+    from ece329_workflow.engine import _emvr_stage_entry_output
+    from ece329_workflow.dialogue_state import save_pending_action
+    from ece329_workflow.builder_requirements import builder_requirement_values
+
+    stage = Stage.COURSE_MAPPING_AND_DIRECTION
+    title = "长螺线管中心磁场与电流"
+    lab = "ece329_solenoid_current"
+    store = SQLiteSessionStore(tmp_path / "private/design.sqlite3")
+    for key, message, fields in (
+        ("title_only", "就叫长螺线管中心磁场与电流吧", {"lab_title": title}),
+        ("both_fields", "就叫长螺线管中心磁场与电流吧，内部编号用 ece329_solenoid_current 就好",
+         {"lab_title": title, "lab_id": lab}),
+    ):
+        session = DesignSession(key, InteractionState.EMVR_DIRECT, current_stage_index=list(Stage).index(stage))
+        save_pending_action(session, stage, _emvr_stage_entry_output(session, stage))
+        store.save(session)
+        request = {"message": message, "turn_id": "identity-turn", "interpretation": {
+            "intent": "ANSWER_CURRENT_QUESTION", "confidence": 1,
+            "semantic_updates": {"stage_field_updates": [
+                {"field": field, "operation": "REPLACE", "value": value} for field, value in fields.items()]}}}
+        reply = cli(tmp_path, "turn", key, "--stdin-json", stdin=request)
+        saved = store.get(key)
+        values = builder_requirement_values(saved)
+        assert values["lab_title"] == title
+        assert saved.history[-1]["user_message"] == message
+        pending = reply["next_input"]
+        if key == "title_only":
+            assert not values.get("lab_id")
+            assert pending["answer_fields"] == ["lab_id"]
+        else:
+            assert values["lab_id"] == lab
+            assert not {"lab_id", "lab_title"}.intersection(pending.get("answer_fields", []))
+        assert cli(tmp_path, "turn", key, "--stdin-json", stdin=request)["revision"] == reply["revision"]
+
+
+def test_one_user_message_cannot_approve_two_builder_gates(tmp_path, monkeypatch):
+    import pytest
+    sys.path.insert(0, str(SKILL / "scripts"))
+    import workspace
+    state = tmp_path / "LabSpecs/course_lab/workflow_state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{}")
+    approvals = []
+    monkeypatch.setattr(workspace, "labflow", lambda pack, *args: approvals.append(args))
+    monkeypatch.setattr(workspace, "read_builder_status", lambda *args: {"approved_gates": [1]})
+    def approve(gate, turn):
+        return workspace.approve_user_gate(tmp_path, "course_lab", gate, "继续", turn)
+    approve(1, "user-message-1")
+    approve(1, "user-message-1")
+    with pytest.raises(ValueError, match="already bound"):
+        approve(2, "user-message-1")
+    monkeypatch.setattr(workspace, "read_builder_status", lambda *args: {"approved_gates": []})
+    with pytest.raises(ValueError, match="fresh user approval"):
+        approve(1, "user-message-1")
+    approve(2, "user-message-2")
+    assert len(approvals) == 2
+
+
 def test_finished_handoff(tmp_path):
     _, session = completed_magnetic_engine()
     session._store_snapshot = None
@@ -116,6 +177,13 @@ def test_finished_handoff(tmp_path):
     (bundle / "design.pdf").unlink()
     assert cli(tmp_path, "export", key)["artifacts"] == str(bundle)
     assert (bundle / "design.pdf").read_bytes().startswith(b"%PDF")
+    machine_copy = bundle / "builder-gate1-input.json"
+    approved_input = machine_copy.read_bytes()
+    machine_copy.write_text('{"historical":"previous export"}', encoding="utf-8")
+    corrected = Path(cli(tmp_path, "export", key)["artifacts"])
+    assert corrected != bundle and (corrected / machine_copy.name).read_bytes() == approved_input
+    assert json.loads(machine_copy.read_text(encoding="utf-8")) == {"historical": "previous export"}
+    machine_copy.write_bytes(approved_input)
     # A user may keep notes next to the PDFs. Only the approved handoff goes to Builder.
     (bundle / "personal-notes.txt").write_text("not part of the design")
     result = cli(tmp_path, "builder-init", key)
@@ -123,6 +191,7 @@ def test_finished_handoff(tmp_path):
     lab_id = "ece329_solenoid_regression"
     inputs = pack / "LabSpecs" / lab_id / "design-input"
     assert Path(result["builder_inputs"]) == inputs
+    assert result["builder_inputs_match_export"] is True
     if os.name == "nt":
         assert str(pack).startswith("\\\\?\\")
     assert 'language: "简体中文"' in (inputs.parent / "brief.yaml").read_text(encoding="utf-8")
@@ -132,7 +201,15 @@ def test_finished_handoff(tmp_path):
     assert (pack / "UnityProject/LocalPackages/com.emvr.lab-common/package.json").is_file()
     assert not (pack / "KnowledgeBase/legacy-lab-specific-summaries").exists()
     assert cli(tmp_path, "show", key)["builder"]["current_gate"] == 0
-    assert cli(tmp_path, "builder-init", key)["builder_workspace"] == str(pack)
+    # An older running pack can predate the corrected export. Its inputs
+    # are authoritative until the user chooses which edition to build.
+    machine_copy.write_text('{"historical":"previous export"}', encoding="utf-8")
+    frozen = inputs / machine_copy.name
+    frozen.write_bytes(machine_copy.read_bytes())
+    resumed = cli(tmp_path, "builder-init", key)
+    assert resumed["builder_workspace"] == str(pack)
+    assert resumed["builder_inputs_match_export"] is False
+    assert frozen.read_bytes() == machine_copy.read_bytes()
 
 
     # Simulate an external labflow approval in this isolated test project.
@@ -174,6 +251,17 @@ def test_finished_handoff(tmp_path):
         value = get(standalone["url"], "_session/" + standalone["viewer_session"])
         assert value["standalone"] is True and value["builder"]["current_gate"] == 1
         assert "workspace" not in value and "design_id" not in value
+
+
+def test_viewer_upgrades_old_snapshot_once_even_when_user_quotes_old_wording():
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from viewer import snapshot_is_current
+    from workspace import SNAPSHOT_VERSION
+    view = {"revision": 4, "check": {"details": {}},
+            "notes": [{"value": "我的笔记：移动到选定观察位置并记录当前读数或场线形态"}]}
+    assert not snapshot_is_current(4, view)
+    view["check"]["snapshot_version"] = SNAPSHOT_VERSION
+    assert snapshot_is_current(4, view)
 
 
 def test_viewer_ignores_reused_port_with_non_viewer_json(monkeypatch):

@@ -2,6 +2,8 @@
 
 简体中文 · [English tutorial](README.en.md)
 
+已经安装过？直接看[用 Git 更新](#update-git)或[用 ZIP 更新](#update-zip)。
+
 这份教程以“电流如何影响长螺线管中心的磁场”为例，带你从下载项目走到拿到设计 PDF，再按需进入 Unity 构建。首次使用完成第 1～3 步；以后从第 4 步开始。第 3 步只选你使用的一款桌面客户端。
 
 ## 1. 下载项目，打开正确的文件夹
@@ -154,6 +156,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ## 6. 把方案交给 Builder
 
+Windows 下请从 Unity Hub 打开 Agent 给出的短路径（例如 `Z:\UnityProject`）。恢复旧实验时让 Agent 对原 Builder 工作区运行 `builder.py "PACK" unity-project` 取得路径，再用同一实验编号继续；原 Gate 记录仍在原工作区。
+
 1. **沿用刚完成的设计**：在原聊天说“用刚确认并导出的这版方案开始搭建”。核对 Agent 报出的设计版本、Builder 工作区和当前 Gate（构建关卡）。
 2. **已经有自己的方案**：直接从第 3 步配置好的项目开始，把目标文件附到聊天里，指明版本，说“只用附件这一版直接进入 Builder”。Agent 会从这份方案开始核对需求；有多个版本时先让它确认选中了哪一份。
 3. 在每个 Gate 阅读已验证的内容和待确认事项。需要修改就指出具体项，接受当前结果后再确认。需要你在 Unity 中查看时，用 Unity Hub 打开 Agent 给出的运行工作区里的 `UnityProject`，按照当关要求操作。Gate 6 场景验收后，Agent 归档选定的 Gate 5B 源码；关联设计的两本手册在 Gate 8 获批后，Agent 把问题和解决办法写入[新增知识库](knowledge/newknowledge/)。
@@ -190,3 +194,65 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 在根目录用第 2 步的环境安装 `"./emvr-lab-workflow/design[test,harness]"`（使用 `-m pip install`），再运行 `-m pytest -q`。离线测试可设置 `ECE329_GENERATOR=rule` 和 `ECE329_TEST_HARNESS_RUNTIME=1`。已安装 Playwright 和 Chromium 时可运行 `node emvr-lab-workflow/tests/viewer.cjs`。
 
 </details>
+
+<a id="update"></a>
+
+## 9. 更新已有安装并继续实验
+
+先记下当前 `design_id`。如果已进入 Builder，也记下 `lab_id`、当前 Gate 和原 Builder 工作区的实际路径。等待本轮 Agent 操作结束，保存并关闭 Unity 编辑器。可以让 Agent 关闭本项目的本地进度页服务，再开始更新。
+
+<a id="update-git"></a>
+
+### 9A. 用 Git 克隆的项目
+
+1. 在原仓库根目录打开终端，逐行运行下面三条命令。第一条应显示本项目的根目录，第二条应指向下方的项目仓库，第三条显示当前分支和文件改动。[项目仓库](https://github.com/yzhao05/ece329-vr-lab-workflow)
+
+   ```sh
+   git rev-parse --show-toplevel
+   git remote get-url origin
+   git status --short --branch
+   ```
+
+2. 如果当前在 `main`，在同一目录拉取更新。若你改过受 Git 跟踪的文件，先备份或提交自己的改动。若你在自建分支上，先保存工作并切回 `main`。执行：
+
+   ```sh
+   git pull --ff-only origin main
+   git log -1 --oneline
+   ```
+
+   拉取成功后，第二行显示本地最新提交。若 Git 提示会覆盖文件或分支已分叉，先停下，保留本地改动并处理提示，再继续。
+
+3. 保留原来的实验目录和 `.venv`，继续下面的[更新后验证](#update-check)。
+
+<a id="update-zip"></a>
+
+### 9B. 用 Download ZIP 或老师发来的文件夹
+
+1. 在[项目仓库](https://github.com/yzhao05/ece329-vr-lab-workflow)选择 `main`，点 **Code → Download ZIP**，或取得老师发的新版 ZIP。解压到单独的临时文件夹。找到里面同时包含 `README.md`、`emvr-lab-workflow` 和 `web` 的那一层。
+2. 关闭原项目的终端和 Agent 项目窗口。在原文件夹的上一级，把旧文件夹改名为备份（例如在末尾加 `-backup`），再把解压出的新版根文件夹放到**原来的完整路径**。这样已有的 Builder 工作区路径和 Unity Hub 项目位置仍可沿用。
+3. 从备份复制**本机实验数据**到新版中的相同相对位置。默认要复制完整的 `emvr-lab-workflow/state/`；若原来用的是根目录 `state/`，就恢复到根目录。独立 Builder 如果建在 `reusable-code/EMVR_Blind_BuilderPack/RebuildWorkspaces/`，还要复制里面实际用过的实验工作区。外置工作区或自定义状态目录继续使用原路径。
+4. 若有自己积累的材料，合并 `knowledge/newknowledge/`、`reusable-code/newcode/` 以及其他目录中自己添加的文件；遇到同名文件先比对内容。按需恢复本机 `.env` 配置。在新版根目录重新执行第 2 步创建 `.venv`，再按第 3 步为自己的客户端创建 Skill 入口。保留旧文件夹，直到核对完实验进度。
+
+如果自定义的状态目录、网页数据目录或独立 Builder 工作区也在旧项目文件夹内，请从备份恢复到原来的相对位置。
+
+<a id="update-check"></a>
+
+### 9C. 验证更新并续接原进度
+
+1. Git 用户在原环境中运行下面两行。ZIP 用户如果刚完成第 2 步的安装和知识库查询，可以直接进行下一项。
+
+   **Windows · PowerShell**
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install ./emvr-lab-workflow/design
+   .\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
+   ```
+
+   **macOS · 终端**
+
+   ```sh
+   .venv/bin/python -m pip install ./emvr-lab-workflow/design
+   .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
+   ```
+
+2. 查询返回 `course` 和 `formulas` 后，在更新后的项目里新开 Agent 聊天，选中 Skill，说“继续实验［原 design_id］，打开进度页，告诉我当前 Gate 和待处理事项”。独立 Builder 可说“继续原工作区［实际路径］里的［lab_id］”。核对编号、Gate 和上次待处理事项。Windows 上需要打开 Unity 时，使用 Agent 为原工作区返回的短路径。

@@ -13,6 +13,7 @@ import time
 
 SKILL = Path(__file__).resolve().parents[1]
 ROOT = SKILL.parent
+SNAPSHOT_VERSION = 2
 DEFAULT_STATE = ROOT / "state" if (ROOT / "state").is_dir() else SKILL / "state"
 BASE = ROOT / "reusable-code/EMVR_Blind_BuilderPack"
 
@@ -81,9 +82,19 @@ def publish_directory(staged, target):
             time.sleep(0.1 * 2**attempt)
 
 
+def builder_command(pack, *args):
+    pack = native_path(pack)
+    script = pack / "Tools/labflow/labflow.py"
+    # Previously published runs freeze their own tools at Gate 0. Use the
+    # compatible reader for that exact release without rewriting frozen bytes.
+    if hashlib.sha256(script.read_bytes()).hexdigest() == "d86e54ca5488871ac79a6921c17efcd751d6c086fdcf8d86e5e6980a174c19f6":
+        script = BASE / "Tools/labflow/labflow.py"
+    return [sys.executable, str(script), "--project-root", str(pack), *args]
+
+
 def labflow(pack, *args):
     pack = native_path(pack)
-    command = [sys.executable, str(pack / "Tools/labflow/labflow.py"), "--project-root", str(pack), *args]
+    command = builder_command(pack, *args)
     proc = subprocess.run(command, cwd=pack, encoding="utf-8", capture_output=True,
                           env={**os.environ, "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"})
     if proc.returncode:
@@ -97,11 +108,50 @@ def run_directory(state, key, fingerprint):
     return state / "builds" / name / BASE.name
 
 
+def approve_user_gate(pack, lab_id, gate, note, turn_id):
+    """Bind a real user message to one gate, including across CLI restarts."""
+    if not turn_id or not turn_id.strip() or len(turn_id) > 256:
+        raise ValueError("Provide the same --turn-id for every action from this user message.")
+    pack = native_path(pack)
+    if not (pack / "LabSpecs" / valid_id(lab_id) / "workflow_state.json").is_file():
+        raise ValueError("Builder run not found.")
+    receipts = pack / "BuildEvidence" / lab_id / "approval-turns"
+    receipt = receipts / (hashlib.sha256(turn_id.encode()).hexdigest() + ".json")
+    with lock(receipts / "approve.lock"):
+        if receipt.exists():
+            previous = json.loads(receipt.read_text(encoding="utf-8"))
+            if previous != {"gate": gate, "note": note}:
+                raise ValueError("This user message is already bound to a different approval.")
+            status = read_builder_status(pack, lab_id)
+            if gate in status["approved_gates"]:
+                return f"Gate {gate} approval already recorded."
+            # A revision may have invalidated the approval, or a previous
+            # attempt may have stopped before committing. Both need a new turn.
+            raise ValueError(f"Gate {gate} requires a fresh user approval for its current state.")
+        write_json(receipt, {"gate": gate, "note": note})
+        return labflow(pack, "approve-gate", "--lab-id", lab_id, "--gate", str(gate), "--note", note)
+
+
+def builder_progress(data):
+    gate = data.get("current_gate")
+    if data.get("workflow_complete"):
+        return "Builder · Gate 8 · 已完成"
+    if data.get("migration_required") or gate is None:
+        return "Builder · 待核对工作区状态"
+    blocked = (data.get("blocker_recovery") or {}).get("active")
+    status = "受阻" if blocked else "待用户批准" if data.get("gate_ready_for_approval") else "进行中"
+    catalog = json.loads((ROOT / "web/stages.json").read_text(encoding="utf-8"))
+    name = next((item["title"] for item in catalog["builder"] if item["gate"] == gate),
+                data.get("current_gate_name") or "")
+    return f"Builder · Gate {gate} · {name} · {status}"
+
+
 def read_builder_status(pack, lab_id, fingerprint=None):
     data = json.loads(labflow(pack, "status", "--lab-id", lab_id))
     fields = ("lab_id", "current_gate", "current_gate_name", "workflow_complete", "accepted",
               "gate_ready_for_approval", "gate8_step", "migration_required", "stage")
     summary = {key: data.get(key) for key in fields}
+    summary["status_line"] = builder_progress(data)
     # Older run packs predate the normalized approval list. current_gate is
     # the first gate their own validator considers unapproved.
     sequence = data.get("gate_sequence", [])

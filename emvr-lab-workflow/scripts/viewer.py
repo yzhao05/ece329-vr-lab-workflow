@@ -16,10 +16,10 @@ from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
-from workspace import DEFAULT_STATE, ROOT, active_builder, dump, lock, native_path, read_builder_status, valid_id, write_json
+from workspace import DEFAULT_STATE, ROOT, SNAPSHOT_VERSION, active_builder, dump, lock, native_path, read_builder_status, valid_id, write_json
 
 
-VIEWER_PROTOCOL = 6
+VIEWER_PROTOCOL = 8
 
 
 def read_json(path):
@@ -46,7 +46,7 @@ def saved_revision(state, key):
 def snapshot_is_current(revision, view):
     check = view.get("check", {})
     needs_fingerprint = check.get("builder_ready") or view.get("builder")
-    return (revision == view.get("revision") and "details" in check
+    return (revision == view.get("revision") and "details" in check and check.get("snapshot_version") == SNAPSHOT_VERSION
             and (not needs_fingerprint or bool(view.get("builder_source_fingerprint"))))
 
 

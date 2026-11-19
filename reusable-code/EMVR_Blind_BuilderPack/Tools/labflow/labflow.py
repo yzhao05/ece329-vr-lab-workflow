@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -744,6 +745,17 @@ def protected_baseline_errors(root: Path, state: dict[str, Any]) -> list[str]:
         root, PROTECTED_BASELINE_ROOTS, expected_exclusions
     )
     errors: list[str] = []
+    # Git stores Plugins.meta but cannot store its empty sibling directory.
+    # Unity recreates it on import. All file bytes and other roots stay protected.
+    plugins = "UnityProject/Assets/Plugins"
+    folder = Path(native_path(root / plugins))
+    if (plugins in baseline.get("missing_roots", []) and plugins in current["present_roots"]
+            and plugins + ".meta" in baseline_files and folder.is_dir()
+            and not folder.is_symlink()
+            and not (getattr(folder.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            and not any(folder.iterdir())):
+        current["present_roots"].remove(plugins)
+        current["missing_roots"] = sorted([*current["missing_roots"], plugins])
     if current["present_roots"] != baseline.get("present_roots"):
         errors.append("Protected root presence changed after Gate 0 capture.")
     if current["missing_roots"] != baseline.get("missing_roots"):

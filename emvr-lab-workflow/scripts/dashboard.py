@@ -3,6 +3,7 @@ from ece329_workflow.emvr_catalog import course_projection, selection
 from ece329_workflow.knowledge_base import KNOWLEDGE
 from ece329_workflow.stages import public_stage_catalog
 from ece329_workflow.models import InteractionState
+from workspace import SNAPSHOT_VERSION
 
 
 def builder_fingerprint(design):
@@ -59,7 +60,7 @@ def snapshot(design, builder=None):
         "flow": [{"title": title, "status": "已确认" if done or i < number else
                   "进行中" if i == number else "待开始"} for i, title in groups.items()],
         "builder": builder, "evidence": evidence, "notes": notes,
-        "check": {"status": review.get("status"), "final": bool(review.get("final_review")),
+        "check": {"snapshot_version": SNAPSHOT_VERSION, "status": review.get("status"), "final": bool(review.get("final_review")),
                   "issues": [{"finding": i["finding"], "suggestion": i.get("suggestion", "")}
                              for i in review.get("issues", [])],
                   "report_ready": design.get("report_ready", False), "builder_ready": design.get("builder_input_ready", False)}

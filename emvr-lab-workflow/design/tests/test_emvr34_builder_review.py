@@ -103,8 +103,24 @@ def test_new_physics_guidance_has_no_unknown_formula_ids():
     assert set(FORMULA_IMPLEMENTATION_NOTES) <= {f["id"] for f in KNOWLEDGE.formulas}
 
 
+def test_saved_probe_inventory_uses_current_measurement_contract(magnetic_design):
+    from ece329_workflow.reporting import effective_emvr_stage_payload
+    session = deepcopy(magnetic_design)
+    stage = Stage.CONCEPTUAL_OR_VR_SETUP
+    old = "移动到选定观察位置并记录当前读数或场线形态"
+    row = session.stage_outputs[stage.value]["stage_payload"]["object_inventory"][0]
+    row["student_interaction"] = old
+    projected = effective_emvr_stage_payload(session, stage)["object_inventory"][0]
+    assert projected["student_interaction"] == "按测量方案在指定位置读取并记录观测结果"
+    assert old not in json.dumps(build_builder_gate1_input(session), ensure_ascii=False)
+    assert row["student_interaction"] == old
+
+
 def test_new_numerical_contract_requires_renewed_implementation_review(magnetic_design):
     session = deepcopy(magnetic_design)
+    assert implementation_defaults_approval_valid(session)
+    apply_stage_field_updates(session, [{"field": "limitations", "operation": "REPLACE",
+        "value": "模型展示理论预测；真实线圈需要独立测量。"}], stage=Stage.DESIGN_VALUE_AND_LIMITATIONS)
     assert implementation_defaults_approval_valid(session)
     apply_stage_field_updates(session, [{"field": "numerical_model_specifications", "operation": "REPLACE",
         "value": VALUES["numerical_model_specifications"].replace("1e-9 T", "1e-10 T")}], stage=Stage.EXPECTED_DATA_VISUALIZATION)

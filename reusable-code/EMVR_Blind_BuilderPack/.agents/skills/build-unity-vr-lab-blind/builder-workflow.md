@@ -590,7 +590,7 @@ the delivery root. All selected source paths are relative to
 | --- | --- | --- |
 | Gate 5A foundation checks have passed, before the first Gate 5B edit | `python emvr-lab-workflow/scripts/code_archive.py begin --workspace "PACK" --lab-id LAB_ID` | Confirm `baseline_recorded` for this run. |
 | Gate 5B implementation and tests are ready, before Gate 5 approval | `python emvr-lab-workflow/scripts/code_archive.py capture --workspace "PACK" --lab-id LAB_ID --file "Scripts/Example.cs"` | Replace the example and repeat `--file` for each new or modified domain source, shader, assembly definition or test. Check the returned `selected` list. |
-| User accepts the Gate 6 scene | `python emvr-lab-workflow/scripts/code_archive.py publish --workspace "PACK" --lab-id LAB_ID --approval-note "USER_FEEDBACK"` | Substitute the user's actual acceptance. If native approval is already recorded, omit `--approval-note`. Verify the returned archive under `reusable-code/newcode/<lab_id>/<accepted-digest>/` and the selected files, including available Unity metadata. |
+| User accepts the Gate 6 scene | `python emvr-lab-workflow/scripts/code_archive.py publish --workspace "PACK" --lab-id LAB_ID --approval-note "USER_FEEDBACK" --turn-id TURN_ID` | Substitute the user's actual acceptance. If native approval is already recorded, omit `--approval-note`. Verify the returned archive under `reusable-code/newcode/<lab_id>/<accepted-digest>/` and the selected files, including available Unity metadata. |
 
 If publication fails, inspect the current native acceptance and the selection.
 Retry publication for that workspace after resolving the reported issue. A

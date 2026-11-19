@@ -282,7 +282,7 @@ def format_implementation_defaults(contract: dict[str, Any]) -> str:
     )
 
 
-def implementation_defaults_fingerprint(session: DesignSession) -> str:
+def implementation_defaults_fingerprint(session: DesignSession, *, legacy: bool = False) -> str:
     """Hash only design inputs that can change the generated implementation."""
 
     stage_state = session.design_context.get("stage_design_state", {})
@@ -291,6 +291,7 @@ def implementation_defaults_fingerprint(session: DesignSession) -> str:
     emvr = emvr if isinstance(emvr, dict) else {}
     field_state = emvr.get("field_state", {})
     field_state = field_state if isinstance(field_state, dict) else {}
+    inputs = _IMPLEMENTATION_INPUT_FIELDS if legacy else _IMPLEMENTATION_INPUT_FIELDS - {"limitations"}
     material = {
         # Bind approval to the exact deterministic contract shown to the user.
         # This also covers legacy procedure steps stored only in stage_outputs.
@@ -298,12 +299,12 @@ def implementation_defaults_fingerprint(session: DesignSession) -> str:
         "stage_state": {
             key: deepcopy(value)
             for key, value in stage_state.items()
-            if key in _IMPLEMENTATION_INPUT_FIELDS
+            if key in inputs
         },
         "field_state": {
             key: deepcopy(value)
             for key, value in field_state.items()
-            if key in _IMPLEMENTATION_INPUT_FIELDS
+            if key in inputs
         },
         "formula_selection": deepcopy(
             (emvr.get("formula_flow") or {}).get("formula_selection", {})
@@ -335,7 +336,8 @@ def implementation_defaults_approval_valid(session: DesignSession) -> bool:
     approval = emvr.get("implementation_defaults_approval", {})
     return bool(
         isinstance(approval, dict)
-        and approval.get("fingerprint") == implementation_defaults_fingerprint(session)
+        and (approval.get("fingerprint") == implementation_defaults_fingerprint(session)
+             or ("scope" not in approval and approval.get("fingerprint") == implementation_defaults_fingerprint(session, legacy=True)))
         and approval.get("contract_version") == IMPLEMENTATION_DEFAULTS_VERSION
         and approval.get("approved_value") == _latest_value(session, IMPLEMENTATION_DEFAULTS_FIELD)
     )
@@ -351,6 +353,7 @@ def record_implementation_defaults_approval(
         emvr = {}
         session.design_context["emvr_design"] = emvr
     emvr["implementation_defaults_approval"] = {
+        "scope": "implementation",
         "fingerprint": implementation_defaults_fingerprint(session),
         "contract_version": IMPLEMENTATION_DEFAULTS_VERSION,
         "source": source,

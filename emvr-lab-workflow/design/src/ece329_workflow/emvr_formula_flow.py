@@ -706,6 +706,12 @@ def _formula_cards(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return cards
 
 
+_FORMULA_DISCUSSION = (
+    "你希望学生用哪条关系解释观察结果？如果另一条公式能帮他们理解原因，也可以一起选；"
+    "还没想好时，告诉我你想比较的两种现象，我们一起挑。"
+)
+
+
 def _format_formula_cards(cards: list[dict[str, Any]], topic: str) -> str:
     paragraphs = [
         f"你提出的是“{topic}”。我们先不急着填写物体、变量或流程，先确定这个实验真正要检验的理论关系。"
@@ -730,10 +736,7 @@ def _format_formula_cards(cards: list[dict[str, Any]], topic: str) -> str:
             f"可观察：{'、'.join(card['observed_quantities'][:4])}\n"
             f"适用条件：{'；'.join(card['boundary_conditions'])}"
         )
-    paragraphs.append(
-        "你更想围绕哪组公式展开？如果还不确定，我也可以先比较这些公式分别适合做成什么样的 Unity VR 实验；"
-        "也可以组合一组主要公式和一组辅助公式。"
-    )
+    paragraphs.append(_FORMULA_DISCUSSION)
     return "\n\n".join(paragraphs)
 
 
@@ -1854,10 +1857,10 @@ def handle_emvr_formula_turn(
                         "type": "SELECT_EMVR_FORMULA",
                         "subject": "formula_selection",
                         "proposal": {"candidate_profile_ids": selection["candidate_profile_ids"]},
-                        "question": "你希望采用哪组公式，或怎样组合主要公式与辅助公式？",
+                        "question": _FORMULA_DISCUSSION,
                     },
                 },
-                student_task="你希望采用哪组公式，或怎样组合主要公式与辅助公式？",
+                student_task=_FORMULA_DISCUSSION,
             ),
             False,
         )

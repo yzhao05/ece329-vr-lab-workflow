@@ -1650,6 +1650,10 @@ _EMVR_INTERACTIVE_ENTRY_STAGES = {
 }
 
 _EMVR_ENTRY_QUESTIONS: dict[Stage, tuple[str, str]] = {
+    Stage.COURSE_MAPPING_AND_DIRECTION: (
+        "实验名称与编号已记录。",
+        "哪条课程关系能解释你想观察的现象？",
+    ),
     Stage.IDEA_BRAINSTORMING: (
         "先把你的模糊想法整理成VR实验的设计边界。这里不需要考虑代码或具体实现。",
         "你希望学生进入这个VR实验后，主要操作什么对象、观察什么电磁现象，并最终理解什么关系？",
@@ -1809,8 +1813,8 @@ def _default_proposal_text(session, value):
     return f'\n\n以下是按当前实验生成的完整默认方案：\n{value}'
 
 
-def _emvr_stage_entry_output(session: DesignSession, stage: Stage) -> StepOutput:
-    requirement = next_due_builder_requirement(session, stage)
+def _emvr_stage_entry_output(session: DesignSession, stage: Stage, *, group_questions: bool = True) -> StepOutput:
+    requirement = next_due_builder_requirement(session, stage, group_questions=group_questions)
     if requirement is not None:
         field = str(requirement["field"])
         question = str(requirement["question"])
@@ -1822,7 +1826,7 @@ def _emvr_stage_entry_output(session: DesignSession, stage: Stage) -> StepOutput
             "type": "ANSWER_EMVR_STAGE_QUESTION",
             "interaction_state": InteractionState.EMVR_DIRECT.value,
             "subject": field,
-            "answer_fields": [field],
+            "answer_fields": requirement.get("answer_fields", [field]),
             "question": question,
             "advance_on_accept": False,
             "allowed_intents": [
@@ -1906,8 +1910,7 @@ def _emvr_stage_entry_output(session: DesignSession, stage: Stage) -> StepOutput
         Stage.HYPOTHESIS,
     }
     review_question = (
-        "这份草稿是否准确承接了当前研究问题？如需修订，请直接指出对应的物理内容、"
-        "Unity映射或展示要求。"
+        question + " 可以沿用草稿，也可以直接说你的想法。"
         if reference_is_confirmable
         else question
     )
@@ -1981,6 +1984,8 @@ def _prepare_emvr_stage_output(
     stage: Stage,
     output: StepOutput,
     turn_intent: dict[str, Any] | None = None,
+    *,
+    group_questions: bool = True,
 ) -> None:
     """Make the stage artifact visible and wait for a contextual decision."""
     from .emvr_catalog import project_catalog
@@ -2174,7 +2179,7 @@ def _prepare_emvr_stage_output(
             }
             return
 
-    requirement = next_due_builder_requirement(session, stage)
+    requirement = next_due_builder_requirement(session, stage, group_questions=group_questions)
     output.stage_payload["builder_handoff_status"] = builder_handoff_status(session)
     if requirement is not None:
         field = str(requirement["field"])
@@ -2213,7 +2218,7 @@ def _prepare_emvr_stage_output(
             "type": "ANSWER_EMVR_STAGE_QUESTION",
             "interaction_state": InteractionState.EMVR_DIRECT.value,
             "subject": field,
-            "answer_fields": [field],
+            "answer_fields": requirement.get("answer_fields", [field]),
             "question": task,
             "advance_on_accept": False,
             "allowed_intents": [
@@ -2334,6 +2339,8 @@ def _prepare_emvr_completion_repair(
     stage: Stage,
     output: StepOutput,
     error: str = "",
+    *,
+    group_questions: bool = True,
 ) -> None:
     """Keep a failed EMVR completion attempt actionable and stage-local."""
 
@@ -2351,9 +2358,10 @@ def _prepare_emvr_completion_repair(
         # is a writable design repair, never an unknown exporter failure.
         issues = [issue for source_stage in Stage if source_stage is not stage
                   for issue in emvr_stage_completeness_issues(session, source_stage)]
-    due = next_due_builder_requirement(session, stage)
+    due = next_due_builder_requirement(session, stage, group_questions=group_questions)
     if due and not issues:
-        issues = [{"field": due["field"], "label": due["label"], "question": due["question"]}]
+        issues = [{"field": due["field"], "label": due["label"], "question": due["question"],
+                   "answer_fields": due.get("answer_fields", [due["field"]])}]
     if not issues and stage is Stage.STUDENT_SYNTHESIS_OR_EMVR_OUTPUT:
         quality_review = evaluate_design_quality(session, final_review=True)
         priority = quality_review.get("priority_issue")
@@ -2429,7 +2437,7 @@ def _prepare_emvr_completion_repair(
         "subject": answer_field,
         # Structured report projections bind to their canonical writable
         # source above, so a valid answer always changes persistent state.
-        "answer_fields": [answer_field],
+        "answer_fields": issue.get("answer_fields", [answer_field]),
         "required_report_field": issue["field"],
         "question": question,
         "advance_on_accept": False,
@@ -2947,6 +2955,7 @@ class WorkflowEngine:
         store: SessionStore | None = None,
     ) -> None:
         self.generator = generator or generator_from_environment()
+        self._group_questions = getattr(self.generator, "supports_grouped_questions", False)
         self.store = store or store_from_environment()
         self._session_locks = tuple(RLock() for _ in range(64))
         self.experience_store = None
@@ -3060,8 +3069,9 @@ class WorkflowEngine:
             # the same normalization as newly created sessions.
             pending["interaction_state"] = InteractionState.EMVR_DIRECT.value
         from .harness_semantics import enabled as harness_understanding_enabled
-        harness_understanding = harness_understanding_enabled(self.generator)
-        if not harness_understanding:
+        semantic_authority = (harness_understanding_enabled(self.generator)
+                              or getattr(self.generator, "has_host_interpretation", False))
+        if not semantic_authority:
             if (session.interaction_state is InteractionState.EMVR_DIRECT
                     and '参考' in message and re.search(r'无关|不相关|不对应|问的是|补齐研究问题', message)
                     and not re.search(r'改为|改回|改成|替换|删除|新增|只保留|设为|就写', message)
@@ -3210,7 +3220,7 @@ class WorkflowEngine:
             if recovered_candidate is not None:
                 return recovered_candidate, pending
         direct = deterministic_intent(
-            "" if harness_understanding else message,
+            "" if semantic_authority else message,
             pending,
             selected_option_id=request.selected_option_id,
             # A completion flag can accompany real text in API/UI requests.
@@ -3218,7 +3228,7 @@ class WorkflowEngine:
             # navigation, after the user-request gate has examined the turn.
             complete_stage=(
                 request.complete_stage and not message.strip()
-                if harness_understanding else
+                if semantic_authority else
                 request.complete_stage
                 and (
                     not callable(getattr(self.generator, "resolve_intent", None))
@@ -3261,7 +3271,7 @@ class WorkflowEngine:
                 for scene in latest_stage_one_scenes(session.history)
                 if isinstance(scene, dict)
             ]
-            if not harness_understanding:
+            if not semantic_authority:
                 carried_context["current_course_evidence"] = {
                     "lecture_concepts": [
                         {
@@ -3298,7 +3308,7 @@ class WorkflowEngine:
                 carried_context["emvr_formula_flow"] = public_formula_flow_state(
                     session
                 )
-                if not harness_understanding:
+                if not semantic_authority:
                     carried_context["topic_domain_evidence"] = KNOWLEDGE.topic_domain_evidence(message)
                 carried_context["formula_profile_catalog"] = [
                     {
@@ -3371,7 +3381,7 @@ class WorkflowEngine:
                     actions_authoritative=True,
                 )
             validated = validate_resolved_intent(semantic, pending)
-            if harness_understanding:
+            if semantic_authority:
                 # Do not reinterpret a model decision using local phrase lists,
                 # single-field fallbacks or a second semantic recovery chain.
                 return validated, pending
@@ -3991,7 +4001,8 @@ class WorkflowEngine:
                 and any(emvr_stage_completeness_issues(session, source) for source in Stage
                         if source is not Stage.STUDENT_SYNTHESIS_OR_EMVR_OUTPUT)):
             # Upgrade already-stuck sessions to a concrete, writable question.
-            _prepare_emvr_completion_repair(session, session.current_stage, StepOutput(assistant_message=""))
+            _prepare_emvr_completion_repair(session, session.current_stage, StepOutput(assistant_message=""),
+                                            group_questions=self._group_questions)
             session.model_context.pop("artifact_blocker", None)
             blocker = {}
         if (
@@ -4043,7 +4054,8 @@ class WorkflowEngine:
                 message,
             )
         from .harness_semantics import enabled as harness_understanding_enabled
-        if input_kind != UNREASONABLE_REQUEST and not harness_understanding_enabled(self.generator):
+        if (input_kind != UNREASONABLE_REQUEST and not harness_understanding_enabled(self.generator)
+                and not getattr(self.generator, "has_host_interpretation", False)):
             reconcile_meta_requests(turn_intent, message)
         _prioritize_user_content_before_transition(
             turn_intent, message, session.interaction_state,
@@ -4504,7 +4516,7 @@ class WorkflowEngine:
             completion_error = None
             completed_response_types.add("REQUEST_SUMMARY")
         elif turn_intent.get("source") == "STALE_IMPLEMENTATION_DEFAULTS":
-            output = _emvr_stage_entry_output(session, handled_stage)
+            output = _emvr_stage_entry_output(session, handled_stage, group_questions=self._group_questions)
             output.assistant_message = (
                 "实验或实现规范已更新，下面展示最新方案，确认后再导出。\n\n"
                 + output.assistant_message
@@ -4831,7 +4843,7 @@ class WorkflowEngine:
             session.turn_context = {}
             completion_error = None
         elif emvr_stage_entry_turn:
-            output = _emvr_stage_entry_output(session, handled_stage)
+            output = _emvr_stage_entry_output(session, handled_stage, group_questions=self._group_questions)
             session.turn_context = {}
             completion_error = None
         elif clarification_turn:
@@ -4922,7 +4934,7 @@ class WorkflowEngine:
                 == IMPLEMENTATION_DEFAULTS_FIELD
             ):
                 output.stage_payload.pop("student_value_and_limit_notes", None)
-            _prepare_emvr_stage_output(session, handled_stage, output, turn_intent)
+            _prepare_emvr_stage_output(session, handled_stage, output, turn_intent, group_questions=self._group_questions)
             completion_error = None
         proposals = output.stage_payload.get("standard_comparisons")
         if handled_stage is Stage.IDEA_BRAINSTORMING and isinstance(proposals, list) and proposals and not (
@@ -5190,6 +5202,7 @@ class WorkflowEngine:
                         handled_stage,
                         output,
                         completion_error,
+                        group_questions=self._group_questions,
                     )
                     # Completion is validated after the normal artifact was
                     # persisted.  Keep storage and history aligned with the
@@ -5762,7 +5775,7 @@ class WorkflowEngine:
                         f"实验方向还需要补齐：{missing}。"
                         "我会继续围绕当前想法逐项确认，不会把模式指令或单个对象当成完整方案。"
                     )
-            current = next_due_builder_requirement(session, stage)
+            current = next_due_builder_requirement(session, stage, group_questions=False)
             if current is not None:
                 raise StageCompletionError(
                     f"在继续之前，请先明确{current['label']}。{current['question']}"

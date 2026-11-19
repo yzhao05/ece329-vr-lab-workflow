@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 
-from workspace import ROOT, dump, labflow, lock, native_path, publish_directory, valid_id, write_json
+from workspace import ROOT, approve_user_gate, dump, labflow, lock, native_path, publish_directory, read_builder_status, valid_id, write_json
 
 
 SOURCE_TYPES = {".cs", ".shader", ".shadergraph", ".shadersubgraph", ".compute", ".hlsl", ".cginc", ".asmdef", ".asmref"}
@@ -27,7 +27,7 @@ def sources(pack):
     return result
 
 
-def archive(pack, lab, action, files=(), destination=ROOT / "reusable-code/newcode", approval_note=None):
+def archive(pack, lab, action, files=(), destination=ROOT / "reusable-code/newcode", approval_note=None, turn_id=None):
     pack = native_path(pack.resolve())
     evidence = pack / "BuildEvidence" / valid_id(lab) / "gate5b-archive"
     with lock(evidence / "record.lock"):
@@ -70,7 +70,7 @@ def archive(pack, lab, action, files=(), destination=ROOT / "reusable-code/newco
         if not inputs:
             raise ValueError("The Gate 5B source selection is empty.")
         if approval_note and status.get("current_gate") == 6:
-            labflow(pack, "approve-gate", "--lab-id", lab, "--gate", "6", "--note", approval_note)
+            approve_user_gate(pack, lab, 6, approval_note, turn_id)
             status = json.loads(labflow(pack, "status", "--lab-id", lab))
         approved = status.get("approved_gates")
         past_gate6 = 6 in approved if approved is not None else (status.get("current_gate") == 8 or status.get("workflow_complete"))
@@ -114,10 +114,13 @@ if __name__ == "__main__":
     parser.add_argument("--lab-id", required=True, type=valid_id)
     parser.add_argument("--file", action="append", default=[])
     parser.add_argument("--approval-note", help="Record explicit user acceptance before publishing")
+    parser.add_argument("--turn-id", help="ID of the user message approving Gate 6")
     args = parser.parse_args()
     if args.approval_note and args.action != "publish":
         parser.error("--approval-note is only used when publishing Gate 6")
     try:
-        print(dump(archive(args.workspace, args.lab_id, args.action, args.file, approval_note=args.approval_note)))
+        result = archive(args.workspace, args.lab_id, args.action, args.file, approval_note=args.approval_note, turn_id=args.turn_id)
+        result["status_line"] = read_builder_status(args.workspace, args.lab_id)["status_line"]
+        print(dump(result))
     except (OSError, ValueError) as exc:
         sys.exit(str(exc))

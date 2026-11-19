@@ -970,6 +970,12 @@ def effective_emvr_stage_payload(
     stored = session.stage_outputs.get(stage.value, {})
     payload = stored.get("stage_payload", {}) if isinstance(stored, dict) else {}
     payload = deepcopy(payload) if isinstance(payload, dict) else {}
+    # Older generated inventories assumed every observation tool was draggable.
+    # Preserve authored instructions and defer the generated row to the measurement contract.
+    if stage is Stage.CONCEPTUAL_OR_VR_SETUP:
+        for row in payload.get("object_inventory") or []:
+            if isinstance(row, dict) and row.get("student_interaction") == "移动到选定观察位置并记录当前读数或场线形态":
+                row["student_interaction"] = "按测量方案在指定位置读取并记录观测结果"
     for transient_field in _TRANSIENT_REPORT_PAYLOAD_FIELDS:
         payload.pop(transient_field, None)
     emvr = session.design_context.get("emvr_design", {})

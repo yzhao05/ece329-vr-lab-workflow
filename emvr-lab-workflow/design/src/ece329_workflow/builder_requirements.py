@@ -569,6 +569,8 @@ def next_builder_requirement(
 def next_due_builder_requirement(
     session: DesignSession,
     stage: Stage,
+    *,
+    group_questions: bool = True,
 ) -> dict[str, Any] | None:
     """Return the earliest unfilled requirement that should already be known.
 
@@ -578,7 +580,7 @@ def next_due_builder_requirement(
 
     current_index = STAGE_SEQUENCE.index(stage)
     missing = missing_builder_requirements(session)
-    return next(
+    first = next(
         (
             item
             for item in missing
@@ -586,6 +588,19 @@ def next_due_builder_requirement(
         ),
         None,
     )
+    if not group_questions:
+        return first
+    paired_questions = {
+        "lab_title": ("lab_id", "实验名称和实验 ID",
+                      "你想用什么名称突出这个实验的核心比较？可以同时写下实验 ID（小写字母开头，3–64 位小写字母、数字或下划线），也可以让我根据名称拟一个。"),
+        "hidden_object_lifecycle": ("initial_reset_state", "开场、触发与重置",
+                      "学生进场时能看到哪些对象，哪些要操作后才出现？重置时，哪些对象、参数和记录应回到什么状态？"),
+    }
+    if first and not first.get("validation_error") and first["field"] in paired_questions:
+        other, label, question = paired_questions[first["field"]]
+        if any(item["field"] == other and not item.get("validation_error") for item in missing):
+            return {**first, "answer_fields": [first["field"], other], "label": label, "question": question}
+    return first
 
 
 def builder_handoff_status(session: DesignSession) -> dict[str, Any]:

@@ -789,6 +789,9 @@ class LabflowTests(unittest.TestCase):
             protected = root / "Policies" / "reuse-policy.md"
             protected.parent.mkdir(parents=True)
             protected.write_text("version one\n", encoding="utf-8")
+            plugins = root / "UnityProject/Assets/Plugins"
+            plugins.parent.mkdir(parents=True, exist_ok=True)
+            plugins.with_suffix(".meta").write_text("folderAsset: yes\n")
             (root / "KnowledgeBase" / "rebuild-lessons").mkdir(parents=True)
             state = make_source_reference_fixture(root)
             state.update(
@@ -806,6 +809,14 @@ class LabflowTests(unittest.TestCase):
                     root, "lab_example", state
                 )
             self.assertTrue(baseline.is_file())
+            frozen = baseline.read_bytes()
+            plugins.mkdir()
+            self.assertEqual(labflow.protected_baseline_errors(root, state), [])
+            unexpected = plugins / "unexpected.dll"
+            unexpected.write_bytes(b"not part of the baseline")
+            self.assertTrue(labflow.protected_baseline_errors(root, state))
+            unexpected.unlink()
+            self.assertEqual(baseline.read_bytes(), frozen)
             self.assertEqual(labflow.protected_baseline_errors(root, state), [])
 
             with mock.patch.object(labflow, "foundation_errors", return_value=[]), mock.patch.object(

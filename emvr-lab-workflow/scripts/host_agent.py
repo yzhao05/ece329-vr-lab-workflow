@@ -6,9 +6,14 @@ from ece329_workflow.generator import RuleBasedStageGenerator
 
 class HostAgentGenerator(RuleBasedStageGenerator):
     supports_emvr_formula_flow = True
+    supports_grouped_questions = True
 
     def __init__(self):
         self.interpretation = None
+
+    @property
+    def has_host_interpretation(self):
+        return self.interpretation is not None
 
     def set_interpretation(self, raw):
         if not isinstance(raw, dict) or raw.get("intent") not in ALL_INTENTS:

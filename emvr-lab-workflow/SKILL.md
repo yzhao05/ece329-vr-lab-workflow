@@ -13,6 +13,10 @@ python emvr-lab-workflow/scripts/viewer.py open --new
 
 ## 启用时先打开网页
 
+每轮回复开头展示当前流程、Gate 编号、名称（设计有细项时也展示细项）和状态。按对话语言表达工具返回的 `status_line`。Design 用本轮 create/turn/show 的结果；Builder 在本轮操作后用 status 的结果。遇到错误时保留原 Gate，说明卡在哪里、缺哪项输入或证据。工作区尚未建档时明确写“准备中，尚未进入 Gate 0”。
+
+一条用户消息最多推进一个 Gate。主 Agent 为该消息使用稳定的 turn_id，重试和同一消息内的工具调用沿用该 ID。只处理当前 Gate；完成当前关后可以预告下一关，等用户的下一条真实消息再执行下一关。用户对同关多个细项的回答一次写入。Design 先说明采纳了哪项想法，再围绕当前决策引导讨论；当用户的回答已经决定了你展示的草稿，直接记录并推进这一阶段。推导、命名和状态汇报无需另问“继续吗”。尚有不同设计方向或到了整份方案定稿时，交由用户决定。
+
 Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开始提问、检索或写入。其他宿主使用相同的本地入口。已知设计编号用 `viewer.py open DESIGN_ID`，新设计用 `open --new`，独立 Builder 用 `open --builder-workspace "PACK" --lab-id LAB_ID`。仅查资料、尚待辨认目标或尚未确定工作区时，先用 `viewer.py open`，定位后再切到对应页面。根据最新页找到的实验仍需与用户所指实验核对。
 
 若浏览器未弹出，打开命令返回的 `url`。有内置浏览器的宿主可加 `--url-only` 并实际打开该 URL。启动失败时检查报错中的日志、网页目录和桌面权限，修正后对同一目标重试。页面打开后沿用本次标签页。每轮通过 `turn` 保存设计，每关通过原生 Builder 工具记录状态，页面约每 2.5 秒刷新。网页语言独立切换，首次默认英文。
@@ -39,7 +43,7 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 
 - **触发条件**　用户在当前设计中回答问题、索取参考、修改草稿或确认阶段。
 - **所需输入**　设计编号、当前草稿、用户本轮原话和对话语言。
-- **执行步骤**　采用统一 EMVR 规则。结合讲义说明主公式、辅助关系和适用边界，逐步讨论方法与方向。每轮提出一个能推进当前阶段的问题，给出有出处的参考、反馈或可修改的阶段草稿。用 `workflow.py turn DESIGN_ID --message "用户原话" --turn-id TURN_ID` 保存该轮。仅当用户明确确认当前草稿时附加 `--complete-stage`；最终阶段须确认整份方案。用户不用另写学生总结。语言改变时附加 `--language en` 或 `--language zh`。
+- **执行步骤**　采用统一 EMVR 规则。结合讲义说明主公式、辅助关系和适用边界，逐步讨论方法与方向。把同一阶段可一起决定的细项组成一份可修改的草稿。例如把课程映射、实验名称和实验 ID 一起给出，或把控件、固定探针、初始值与重置行为一起给出。只追问会改变设计且尚未确定的选择。用户认可整份可见草稿后，用同一条原话、同一 turn_id 和结构化字段更新一次保存各项。根据返回的实际缺项继续。已确认的信息和按已知公式直接算出的值直接沿用，给出必要的依据；不为查资料、计算或整理再索要“继续”。没有明确指向一份可见草稿的“继续”不能代替确认。接入本 Skill 的主 Agent 负责理解每条回复，用 `workflow.py turn DESIGN_ID --stdin-json` 一次提交原话、turn_id、interpretation 及本轮所有明确的字段值。用户直接给出的值即可记录；只有助手提出的候选值需要用户认可。仅当用户明确确认当前草稿时在 JSON 中设置 `complete_stage: true`；最终阶段须确认整份方案。用户不用另写学生总结。语言改变时在 JSON 中设置 `language` 为 `en` 或 `zh`。
 - **成功后**　按返回的阶段、细项和 `revision` 展示实际修订。普通讨论、引用资料、Agent 自拟草稿均留待用户核对。将适用的 `experience_rules` 纳入本轮反馈。
 - **失败时**　按 `completion_error` 补缺项；“前面那个”有多个解释时，用当前可见的候选 ID 澄清。需要结构化解释时，将原话、`turn_id` 和解析结果作为 UTF-8 JSON 传给 `turn DESIGN_ID --stdin-json`。重试同一轮沿用同一 ID 和内容。见[宿主输入协议](references/agent-turns.md)。
 
@@ -53,13 +57,22 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 
 ## 进入或续接 Builder
 
+用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。若使用 Gate 6 的 code_archive.py publish 同时记录批准，附上相同的 `--turn-id TURN_ID`。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
+
+记录工作区的实际绝对路径 PACK。在交付根用项目解释器执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`。规程中的其他 labflow 子命令也通过这个入口转发，适用于已经冻结 Gate 0 基线的旧工作区。若是旧包，请使用更新后的交付根执行，保留原 PACK 和实验编号。
+
+在第一次要求用户打开 Unity 前，执行 `python emvr-lab-workflow/scripts/builder.py "PACK" unity-project`，把返回的路径交给用户在 Unity Hub 打开。Windows 会映射空闲盘符。请在与 Unity Hub 相同的 Windows 用户会话和权限级别执行；若 Agent 沙箱与桌面隔离，在用户桌面终端运行同一命令。用户若已从长路径打开，先保存并关闭那个编辑器，再从返回的短路径打开同一个工程。重启电脑后重新执行命令，重新获取盘符。Gate 记录、代码归档继续使用 PACK。遇到空 Plugins 目录时保留目录及其 .meta，用上述入口重新核验原基线。实际文件变更仍须审查。
+
+
 详细规程集中在 [builder-workflow.md](../reusable-code/EMVR_Blind_BuilderPack/.agents/skills/build-unity-vr-lab-blind/builder-workflow.md)。选定工作区后读取**该工作区内**的同名文件，从 **Create or resume a run** 及当前 Gate 开始。该文件还说明主 Agent 应在何时从交付根调用代码归档工具，固定目标为 `reusable-code/newcode/`。
 
 | 触发条件 | 所需输入 | 执行步骤 | 成功后的动作 | 失败后的处理 |
 | --- | --- | --- | --- | --- |
 | 构建在本 Skill 中已确认的设计 | `design_id`、已确认版本和交接语言 | 打开该设计的页面，核对导出就绪状态，运行 `workflow.py builder-init DESIGN_ID`，语言覆盖与翻译重试方式同导出。核对 `revision`、`builder_inputs` 与目标版本 | 沿用设计标签页，进入返回的 `builder_workspace`，以工作区 `LabSpecs/<lab_id>/design-input/` 中该版 PDF 和 JSON 为依据，查询当前 Gate | 未就绪则返回原设计；指定的是其他修订时先澄清版本。重试时沿用相同设计和版本。已建工作区保留建档时的输入语言 |
-| 用户已有外部方案，只想搭建 | 用户提供的方案文件或正文、所选版本、实验标识及目标工作区 | 有多个版本先请用户指定。按规程选定独立工作区和 `lab_id`，打开其 Builder 页，以指定方案作为需求依据。按规程建档或续接。新实验使用 integrated-development；明确要求盲重建才走 blind-rebuild。手册语言可在原生 `new` 指定 `--manual-language` | 在运行工作区执行 `python Tools/labflow/labflow.py status --lab-id LAB_ID`，说明采用的版本、当前 Gate、待确认事项，直接与用户讨论构建 | 缺少文件、版本或关键要求时仅追问缺项。在本路径中保持 Builder 身份，不为附件创建 Design 会话 |
+| 用户已有外部方案，只想搭建 | 用户提供的方案文件或正文、所选版本、实验标识及目标工作区 | 有多个版本先请用户指定。按规程选定独立工作区和 `lab_id`，打开其 Builder 页，以指定方案作为需求依据。按规程建档或续接。新实验使用 integrated-development；明确要求盲重建才走 blind-rebuild。手册语言可在原生 `new` 指定 `--manual-language` | 从交付根执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`，说明采用的版本、当前 Gate、待确认事项，直接与用户讨论构建 | 缺少文件、版本或关键要求时仅追问缺项。在本路径中保持 Builder 身份，不为附件创建 Design 会话 |
 | 继续已有 Builder | 已关联的设计编号，或工作区与 `lab_id` | 关联设计打开设计页；独立运行打开绑定工作区与 `lab_id` 的页面。在原工作区运行上述 `status` | 依据实际状态从当前 Gate 和待确认项继续 | 有多个工作区或编号时先让用户选择；状态读取失败时核对原路径和标识，再重试 |
+
+恢复工作区时，若 `builder_inputs_match_export` 为 `false`，向用户说明原构建输入位于 `builder_inputs`，本次导出位于 `artifacts`。先核对差异，让用户选择沿用原输入或用本次导出另开独立工作区，再推进 Gate。
 
 ## 资料、反馈与完成后复盘
 
