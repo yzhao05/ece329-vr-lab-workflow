@@ -21,7 +21,16 @@ dl { margin:0; } dt { font-weight:650; color:#116761; } dd { margin:.2rem 0 .85r
 .flow h3 { margin:1.5rem 0 .4rem; font-size:1rem; }
 #gates { list-style:none; padding-left:0; }
 
-#language { margin-inline-start:auto; padding:.35rem .85rem; background:transparent; color:inherit; border:1px solid #82a3a5; border-radius:.5rem; cursor:pointer; }
+.header-actions { margin-inline-start:auto; display:flex; gap:.45rem; }
+.header-actions button { padding:.35rem .85rem; background:transparent; color:inherit; border:1px solid #82a3a5; border-radius:.5rem; cursor:pointer; }
+.header-actions button:disabled { opacity:.45; cursor:default; }
+.header-actions button[aria-pressed=true] { color:#142d40; background:#82ded5; }
+[hidden] { display:none !important; }
+#scene-layout { grid-column:1/-1; min-width:0; }
+#layout-map { display:block; width:100%; height:clamp(15rem,42vw,30rem); background:#eff5f2; border-radius:.6rem; margin:1rem 0; }
+#layout-object { max-width:100%; font:inherit; }
+#layout-position { display:block; margin-top:.6rem; font-variant-numeric:tabular-nums; }
+@media(max-width:500px) { header { flex-wrap:wrap; align-items:center; gap:.4rem; } header span { font-size:.65rem; } .header-actions button { padding:.35rem .55rem; } }
 .substeps { font-size:.92rem; font-weight:400; color:#31484c; }
 .substeps small { display:inline; margin-left:.65rem; }
 #review-details details { margin-top:.6rem; }

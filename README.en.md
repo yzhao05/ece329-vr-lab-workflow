@@ -156,6 +156,10 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ## 6. Hand the plan to Builder
 
+Save the lab scene with visible models in Unity. You can then close the editor and click **Unity 3D** in the progress page. The browser loads the exported geometry locally. Left-drag to orbit, scroll to zoom, or right-drag to pan. Pick a model in the scene or select it from the list, then click **Focus object** for a closer look. **Fit scene** restores the overview. Click **Workflow details** to return.
+
+The preview updates while the editor is open and shows the last saved version after it closes. It displays mesh geometry, base material colors and world transforms. Use Unity to inspect textures, custom shaders and VR interactions. When upgrading an older workspace, ask the agent to run the `unity-project` command below for that workspace, then open and save the lab scene once in Unity. The button stays disabled until the scene has exported geometry.
+
 On Windows, open the short project path returned by the agent in Unity Hub (for example `Z:\UnityProject`). To resume an existing run, ask the agent to run `builder.py "PACK" unity-project` for the original Builder workspace and continue with the same lab ID. The original workspace holds the gate records.
 
 1. **For the design you just finished**, say “Start building from the version I just confirmed and exported.” Check the design version, Builder workspace, and current gate reported by the agent.

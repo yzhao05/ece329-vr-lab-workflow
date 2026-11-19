@@ -247,10 +247,30 @@ def test_finished_handoff(tmp_path):
         assert get(url, f"data/{key}.json")["builder"] is None
         marker.write_bytes(original)
         assert get(url, f"data/{key}.json")["builder"] == progress
+        project = pack / "UnityProject"
+        assert (project / "Assets/EmvrWorkflowPreview/Editor/EmvrSceneLayoutPreview.cs").is_file()
+        scene = f"Assets/Scenes/{lab_id}.unity"
+        asset = project / scene
+        asset.parent.mkdir(parents=True, exist_ok=True)
+        asset.touch()
+        snapshot = project / "Library/EMVRLayout" / (scene + ".saved.json")
+        snapshot.parent.mkdir(parents=True)
+        geometry = b"mesh payload"
+        digest = hashlib.sha256(geometry).hexdigest()
+        snapshot.with_suffix(".json.bin").write_bytes(geometry)
+        snapshot.write_text(json.dumps({"scene": scene, "fileTicks": str(asset.stat().st_mtime_ns // 100 + 621355968000000000),
+            "geometry": digest, "objects": [{"id": 42, "name": "Probe", "position": {"x": 3, "y": 2, "z": 1},
+            "mesh": 0, "matrix": [1,0,0,0,0,1,0,0,0,0,1,0,3,2,1,1], "colors": ["#ffffff"]}]}))
+        layout = get(url, f"data/{key}.json")["layout"]
+        assert layout["objects"][0]["position"] == [3, 2, 1]
+        assert layout["geometry"] == digest
+        with build_opener(ProxyHandler({})).open(urljoin(url, f"data/{key}.json?geometry={digest}")) as response:
+            assert response.read() == geometry
     with page(tmp_path, "--builder-workspace", str(pack), "--lab-id", lab_id) as standalone:
         value = get(standalone["url"], "_session/" + standalone["viewer_session"])
         assert value["standalone"] is True and value["builder"]["current_gate"] == 1
         assert "workspace" not in value and "design_id" not in value
+        assert value["layout"] == layout
 
 
 def test_viewer_upgrades_old_snapshot_once_even_when_user_quotes_old_wording():
@@ -306,12 +326,16 @@ def test_open_first_and_bind_only_this_design(tmp_path):
         marker = next((tmp_path / "private/viewer").glob("*.json"))
         info = json.loads(marker.read_text(encoding="utf-8"))
         info.pop("protocol")
+        # A user's pre-3D web directory can still serve the bundled preview.
+        (tmp_path / "public/scene-preview.js").unlink()
         temp = marker.with_suffix(".new")
         temp.write_text(json.dumps(info), encoding="utf-8")
         temp.replace(marker)
         same_server = json.loads(viewer_command(tmp_path, "open", "--url-only").stdout)
         assert urlsplit(same_server["url"]).netloc == urlsplit(url).netloc
         assert get(url, "_instance")["instance"] != info["instance"]
+        with build_opener(ProxyHandler({})).open(urljoin(url, "scene-preview.js")) as response:
+            assert response.read() == (ROOT / "web/scene-preview.js").read_bytes()
         assert len(get(url, "stages.json")["design"]) == 7
         key = cli(tmp_path, "create", "线圈电流和磁场", "--viewer-session", token)["design_id"]
         assert get(url, "_session/" + token) == {"design_id": key}

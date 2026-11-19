@@ -156,6 +156,10 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ## 6. 把方案交给 Builder
 
+在 Unity 中保存含可见模型的实验场景后，关闭编辑器也可以点击进度页右上角的 **Unity 3D**。浏览器会在本机加载已导出的模型。按住鼠标左键拖动可旋转，滚轮可缩放，按住右键拖动可平移。点选模型或从列表选择物体后，点击 **聚焦物体** 可近看，点击 **查看全景** 可恢复整体视角。点击 **工作流详情** 返回进度页。
+
+编辑器打开时预览会更新，关闭后显示最近保存的版本。预览使用网格形状、基本材质颜色和世界变换；贴图、Unity 专用着色器和 VR 交互需要在 Unity 中查看。旧工作区首次升级时，让 Agent 对原工作区运行下面的 `unity-project` 命令，在 Unity 中打开并保存目标场景一次。尚无可预览模型时按钮为灰色。
+
 Windows 下请从 Unity Hub 打开 Agent 给出的短路径（例如 `Z:\UnityProject`）。恢复旧实验时让 Agent 对原 Builder 工作区运行 `builder.py "PACK" unity-project` 取得路径，再用同一实验编号继续；原 Gate 记录仍在原工作区。
 
 1. **沿用刚完成的设计**：在原聊天说“用刚确认并导出的这版方案开始搭建”。核对 Agent 报出的设计版本、Builder 工作区和当前 Gate（构建关卡）。

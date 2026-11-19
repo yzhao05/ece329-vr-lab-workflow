@@ -20,6 +20,118 @@ let previous = "";
 let displayedId = null;
 let standalone = null;
 let refreshFailed = false;
+let layout = null;
+let layoutSignature = "";
+let layoutOpen = false;
+let layoutEndpoint = "";
+let preview;
+let loadedKey = "";
+let loading = null;
+let renderedLayout = null;
+let previewState = "";
+
+function previewStatus(state) {
+  previewState = state;
+  find("layout-status").textContent = state === "loading" ? t("Loading scene geometry…","正在读取场景模型…") :
+    state === "retry" ? t("Waiting for the next geometry update…","等待下一次刷新重新读取模型…") :
+    state === "error" ? t("Could not display the model. Check WebGL support and reopen the preview.","无法显示模型。请检查浏览器的 WebGL 支持，再重新打开预览。") : "";
+}
+function coordinates() {
+  const selected = layout?.objects[find("layout-object").selectedIndex];
+  find("layout-position").textContent = selected ? selected.position.map((n,i) =>
+    "XYZ"[i] + " " + n.toLocaleString(language,{maximumFractionDigits:3})).join("   ·   ") + " m" : "";
+}
+async function displayModel() {
+  const key = layoutEndpoint + "?geometry=" + layout.geometry;
+  if (loading && loading.key !== key) {
+    loading.controller.abort();
+    loading = null;
+  }
+  if (loadedKey === key && renderedLayout === layout) return;
+  if (loading?.key === key) return;
+  const task = {key,controller:new AbortController()};
+  loading = task;
+  let fetchingGeometry = false;
+  try {
+    let buffer = null;
+    if (loadedKey !== key) {
+      previewStatus("loading");
+      const module = await import("./scene-preview.js");
+      if (loading !== task) return;
+      fetchingGeometry = true;
+      const response = await fetch(key,{signal:task.controller.signal});
+      if (!response.ok) throw Error("Geometry unavailable");
+      buffer = await response.arrayBuffer();
+      fetchingGeometry = false;
+      if (loading !== task || !layoutOpen) return;
+      if (!preview) preview = module.createPreview(find("layout-map"),id => {
+        find("layout-object").value = String(id);
+        coordinates();
+      });
+    }
+    preview.set(layout,buffer,layoutEndpoint);
+    renderedLayout = layout;
+    loadedKey = key;
+    previewStatus("");
+  } catch (err) {
+    if (loading === task && err.name !== "AbortError") {
+      preview?.reset();
+      loadedKey = "";
+      previewStatus(fetchingGeometry ? "retry" : "error");
+    }
+  } finally {
+    if (loading === task) loading = null;
+  }
+}
+function renderLayout() {
+  const button = find("layout-toggle");
+  button.disabled = !layout;
+  button.textContent = layoutOpen ? t("Workflow details","工作流详情") : "Unity 3D";
+  button.title = layout ? button.textContent : t("Available when this lab has exported 3D geometry","当前实验导出 3D 模型后可查看");
+  button.setAttribute("aria-pressed", String(layoutOpen));
+  document.querySelector(".flow").hidden = layoutOpen;
+  document.querySelector(".detail").hidden = layoutOpen;
+  find("scene-layout").hidden = !layoutOpen;
+  if (layoutOpen) {
+    find("layout-summary").textContent = [layout.scene, layout.source === "live" ? t("Live","实时") : t("Last saved","最近保存"),
+      layout.objects.length + t(" objects"," 个物体")].join(" · ");
+    coordinates();
+    previewStatus(previewState);
+    displayModel();
+  } else {
+    loading?.controller.abort();
+    loading = null;
+    previewStatus("");
+  }
+}
+
+function updateLayout(next, endpoint = "") {
+  next = next?.geometry && next.objects?.length ? next : null;
+  const signature = next ? JSON.stringify(next) : "";
+  if (signature === layoutSignature && endpoint === layoutEndpoint) {
+    if (layoutOpen && previewState === "retry") displayModel();
+    return;
+  }
+  if (!next || endpoint !== layoutEndpoint) {
+    preview?.reset();
+    renderedLayout = null;
+    loadedKey = "";
+  }
+  layoutEndpoint = endpoint;
+  layoutSignature = signature;
+  const select = find("layout-object"), selected = select.value;
+  layout = next;
+  layoutOpen = Boolean(layout && layoutOpen);
+  select.replaceChildren(...(layout?.objects || []).map(item => new Option(item.name,String(item.id))));
+  if (layout?.objects.some(item => String(item.id) === selected)) select.value = selected;
+  renderLayout();
+}
+
+find("layout-toggle").onclick = () => { layoutOpen = Boolean(layout && !layoutOpen); renderLayout(); };
+find("layout-object").onchange = coordinates;
+find("focus-object").onclick = () => preview?.fit(Number(find("layout-object").value));
+find("fit-scene").onclick = () => preview?.fit();
+
 function drawDetails(details = {}) {
   const target = find("review-details");
   target.replaceChildren();
@@ -150,6 +262,7 @@ async function refresh() {
     const target = session ? await read("_session/" + encodeURIComponent(session)) : null;
     standalone = target?.standalone ? target : null;
     if (standalone) {
+      updateLayout(target.layout,"_session/" + encodeURIComponent(session));
       drawSteps(emptySteps("未关联设计"));
       drawBuilder(target.builder);
       lastStatus = t("Standalone Builder workspace","独立 Builder 工作区");
@@ -160,13 +273,16 @@ async function refresh() {
         catch (err) { if (err.message !== "404") throw err; }
       }
       if (id == null) {
+        updateLayout(null);
         if (displayedId) clearDesign();
         lastStatus = t("Waiting for the agent to create a design.","等待 Agent 创建设计。");
       } else {
-        if (displayedId && displayedId !== id) clearDesign();
+        if (displayedId && displayedId !== id) { updateLayout(null); clearDesign(); }
         if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) throw Error("invalid");
         const view = await read("data/" + id + ".json");
         if (view.design_id !== id) throw Error("mismatch");
+        updateLayout(view.layout,"data/" + id + ".json");
+        delete view.layout;
         const serial = JSON.stringify(view);
         if (previous !== serial) {
           draw(view);
@@ -179,6 +295,7 @@ async function refresh() {
     refreshFailed = false;
     find("progress").textContent = lastStatus;
   } catch {
+    updateLayout(null);
     refreshFailed = true;
     find("progress").textContent = errorStatus();
   } finally {
@@ -188,10 +305,12 @@ async function refresh() {
 refresh();
 
 localize();
+renderLayout();
 find("language").onclick = () => {
   language = t("zh", "en");
   try { localStorage.setItem("emvr-view-language", language); } catch {}
   localize();
+  renderLayout();
   if (previous) { draw(JSON.parse(previous)); lastStatus = find("progress").textContent; }
   else if (stages) {
     clearDesign();

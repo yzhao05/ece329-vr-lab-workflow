@@ -12,14 +12,25 @@ import sqlite3
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
-from workspace import DEFAULT_STATE, ROOT, SNAPSHOT_VERSION, active_builder, dump, lock, native_path, read_builder_status, valid_id, write_json
+from workspace import DEFAULT_STATE, ROOT, SNAPSHOT_VERSION, active_builder, dump, lock, native_path, read_builder_status, run_directory, valid_id, write_json
+from scene_layout import scene_layout
 
 
-VIEWER_PROTOCOL = 8
+VIEWER_PROTOCOL = 11
+PREVIEW_ASSETS = {"scene-preview.js", "vendor/three-0.160.1/three.module.min.js", "vendor/three-0.160.1/OrbitControls.js"}
+WEB_ASSETS = {"index.html", "style.css", "stages.json", "viewer.js"} | PREVIEW_ASSETS
+
+
+def web_asset(web, name):
+    asset = web / name
+    # Custom web roots from the four-panel viewer predate the optional 3D modules.
+    if name in PREVIEW_ASSETS and not asset.is_file():
+        return ROOT / "web" / name
+    return asset
 
 
 def read_json(path):
@@ -106,16 +117,16 @@ def instance_file(state, web):
 
 
 def handler(state, web, nonce):
-    assets = {"": "index.html", "index.html": "index.html", "viewer.js": "viewer.js",
-              "style.css": "style.css", "stages.json": "stages.json"}
     types = {".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".json": "application/json"}
 
     class ViewerHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            path = urlsplit(self.path).path.removeprefix("/")
+            request = urlsplit(self.path)
+            path = request.path.removeprefix("/")
+            geometry = parse_qs(request.query).get("geometry", [None])[0]
             try:
-                if path in assets:
-                    asset = web / assets[path]
+                if not path or path in WEB_ASSETS:
+                    asset = web_asset(web, path or "index.html")
                     body, mime = asset.read_bytes(), types[asset.suffix]
                 else:
                     if path == "_instance":
@@ -127,16 +138,30 @@ def handler(state, web, nonce):
                             lab = entry["lab_id"]
                             initialized = native_path(pack / "LabSpecs" / lab / "workflow_state.json").is_file()
                             value = {"standalone": True, "builder": read_builder_status(pack, lab) if initialized else None}
+                            if initialized:
+                                value["layout"] = scene_layout(pack, lab, geometry)
                         else:
                             value = {"design_id": entry.get("design_id")}
                     elif path == "data/latest.json":
                         value = read_json(web / path)
                     elif re.fullmatch(r"data/[A-Za-z0-9_-]{1,80}\.json", path):
-                        value = live_design(state, web, Path(path).stem)
+                        key = Path(path).stem
+                        value = live_design(state, web, key)
+                        builder = value.get("builder") or {}
+                        fingerprint = builder.get("source_fingerprint")
+                        if fingerprint and builder.get("lab_id"):
+                            value["layout"] = scene_layout(run_directory(state, key, fingerprint), builder["lab_id"], geometry)
                     else:
                         self.send_error(404)
                         return
-                    body, mime = json.dumps(value, ensure_ascii=False).encode("utf-8"), types[".json"]
+                    if geometry is not None:
+                        body = value.get("layout")
+                        if not isinstance(body, bytes):
+                            self.send_error(404)
+                            return
+                        mime = "application/octet-stream"
+                    else:
+                        body, mime = json.dumps(value, ensure_ascii=False).encode("utf-8"), types[".json"]
             except FileNotFoundError:
                 self.send_error(404)
                 return
@@ -191,9 +216,10 @@ def running_url(info):
 
 
 def launch(state, web):
-    for asset in ("index.html", "viewer.js", "style.css", "stages.json"):
-        if not (web / asset).is_file():
-            raise ValueError(f"Missing viewer asset: {web / asset}")
+    for asset in sorted(WEB_ASSETS):
+        location = web_asset(web, asset)
+        if not location.is_file():
+            raise ValueError(f"Missing viewer asset: {location}")
     marker = instance_file(state, web)
     with lock(marker.with_suffix(".lock")):
         info = read_registration(marker)

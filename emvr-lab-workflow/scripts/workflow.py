@@ -21,6 +21,7 @@ from ece329_workflow.store import SQLiteSessionStore
 from ece329_workflow.experience import ExperienceStore, FeedbackService, ModelExperienceExtractor
 from workspace import active_builder, publish_directory
 from dashboard import snapshot, builder_fingerprint
+from scene_layout import install_layout_bridge
 from library import copy_builder_references, search
 from host_agent import HostAgentGenerator
 
@@ -125,6 +126,7 @@ def handoff(engine, design, state, start_builder, language=None, translations=No
             labflow(staged, "new", "--lab-id", lab["lab_id"], "--title", lab["title"], "--domain",
                     lab["domain"], "--scene", f"Assets/Scenes/{lab['lab_id']}.unity", "--mode", "integrated-development",
                     "--manual-language", "English" if language == "en" else "简体中文")
+            install_layout_bridge(staged / "UnityProject")
             inputs = staged / "LabSpecs" / lab["lab_id"] / "design-input"
             inputs.mkdir()
             for name in (*pdfs, contract_name):

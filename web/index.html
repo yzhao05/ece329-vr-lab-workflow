@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title data-zh="ECE329 · 实验设计">ECE329 · Experiment design</title>
   <link rel="stylesheet" href="style.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three-0.160.1/three.module.min.js"}}</script>
   <script src="viewer.js" defer></script>
 </head>
 <body>
-  <header><strong>ECE329</strong><span>LAB STUDIO</span><button id="language" type="button" lang="zh">中文</button></header>
+  <header><strong>ECE329</strong><span>LAB STUDIO</span><div class="header-actions">
+    <button id="layout-toggle" type="button" aria-controls="scene-layout" aria-pressed="false" disabled>Unity 3D</button>
+    <button id="language" type="button" lang="zh">中文</button>
+  </div></header>
   <main>
     <section class="flow">
       <h1 data-zh="当前流程">Workflow progress</h1><p id="progress" role="status" data-zh="正在读取设计进度…">Loading progress…</p>
@@ -20,6 +24,18 @@
       <section><h2 data-zh="设计摘要">Design notes</h2><dl id="notes"><dd data-zh="暂无设计内容。">No design notes yet.</dd></dl></section>
       <section><h2 data-zh="设计检查">Design review</h2><p id="checks" data-zh="等待设计记录。">Waiting for a design.</p><ul id="issues"></ul><div id="review-details"></div></section>
     </div>
+    <section id="scene-layout" hidden>
+      <h1 data-zh="Unity 3D 场景">Unity 3D scene</h1>
+      <p id="layout-summary"></p>
+      <p data-zh="拖动旋转，滚轮缩放，右键拖动平移。">Drag to orbit, scroll to zoom, or right-drag to pan.</p>
+      <p id="layout-status" role="status"></p>
+      <canvas id="layout-map" width="960" height="420" aria-label="Unity 3D"></canvas>
+      <label for="layout-object" data-zh="选择物体">Select object</label>
+      <select id="layout-object"></select>
+      <button type="button" id="focus-object" data-zh="聚焦物体">Focus object</button>
+      <button type="button" id="fit-scene" data-zh="查看全景">Fit scene</button>
+      <output id="layout-position" for="layout-object"></output>
+    </section>
   </main>
 </body>
 </html>

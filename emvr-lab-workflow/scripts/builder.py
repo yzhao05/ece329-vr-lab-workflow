@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from scene_layout import install_layout_bridge
 
 from workspace import approve_user_gate, builder_command, builder_progress, dump, labflow, native_path, read_builder_status
 
@@ -13,6 +14,7 @@ def unity_project(pack):
     project = pack / "UnityProject"
     if not native_path(project / "ProjectSettings/ProjectVersion.txt").is_file():
         raise ValueError("Expected a Builder workspace containing UnityProject/ProjectSettings/ProjectVersion.txt")
+    install_layout_bridge(project)
     if os.name != "nt":
         return project
     # Map the parent, so Unity opens a named project directory on the drive.
