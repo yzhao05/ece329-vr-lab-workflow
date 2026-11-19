@@ -1,0 +1,12 @@
+{
+  "base": "package-root",
+  "course": "emvr-lab-workflow/design/src/ece329_workflow/knowledge",
+  "sources": "knowledge/sources",
+  "builder_guides": "reusable-code/EMVR_Blind_BuilderPack/KnowledgeBase/docs",
+  "builder_lessons": "reusable-code/EMVR_Blind_BuilderPack/KnowledgeBase/rebuild-lessons",
+  "builder_archive": "reusable-code/EMVR_Blind_BuilderPack/KnowledgeBase/ReusableCodeArchive",
+  "shared_additions": "knowledge/extensions/shared",
+  "design_additions": "knowledge/extensions/design",
+  "builder_additions": "knowledge/extensions/builder",
+  "updates": "knowledge/newknowledge"
+}

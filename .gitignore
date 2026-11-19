@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.test-tmp/
+state/
+web/data/
+/reusable-code/newcode/*/*.lock
+*.egg-info/
+build/
+dist/
+.venv/
+.env
+.env.*
+!.env.example
+

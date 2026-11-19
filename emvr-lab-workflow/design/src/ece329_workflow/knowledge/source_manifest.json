@@ -1,0 +1,18 @@
+{
+  "source_id": "ece329_lecture_notes_2026",
+  "title": "ECE 329 Lecture Notes",
+  "author": "Erhan Kudeki",
+  "source_filename": "ece329lecture_notes.pdf",
+  "sha256": "11E34B2399005576DD8EA44384C0B73D5768D9594E8288DF16E194FA5E16591C",
+  "page_count": 324,
+  "lecture_count": 39,
+  "extraction_policy": {
+    "concepts": "Only concepts explicitly present in the lecture titles, overview, or lecture text are cataloged.",
+    "formulas": "Core formulas are curated from the PDF and retain PDF page references; visually ambiguous symbols were checked against rendered pages.",
+    "formula_design_profiles": "Every canonical lecture formula is assigned to at least one reviewed experiment-design profile that separates primary and supporting formulas, supported variations, supported observations, and applicability conditions.",
+    "experiment_design_patterns": "A finite set of 15 reviewed experiment-design paradigms defines how formula-centered EMVR methods may be generated at runtime; every formula profile explicitly declares its applicable paradigms.",
+    "scene_formula_links": "Legacy and authored Guided exploration scenes share a many-to-many formula index used to filter course domains and preserve selected scene bindings.",
+    "guided_formula_pattern_scenes": "Authored Guided scenes reuse canonical formulas and explicitly applicable experiment paradigms. They append stable IDs, distinct exploration questions and scoped illustrative extensions; they do not add formulas or replace EMVR runtime generation.",
+    "runtime_constraint": "These notes define the ECE329 course boundary and the validated formula catalog. Brainstorming may also retrieve from supplemental_sources.json when an entry maps back to course-scope concept IDs. Uncataloged ECE329 claims require a reviewed source update."
+  }
+}

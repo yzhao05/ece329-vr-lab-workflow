@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.2.0",
+  "created_from": "frozen EMVR workflow baseline",
+  "gold_copied_into_builder_pack": false,
+  "inventory_semantics": "Frozen counts apply only to immutable reusable inputs. Dynamic knowledge and per-run outputs intentionally have no fixed count.",
+  "sections": {
+    "UnityProject/LocalPackages/com.emvr.lab-common": {
+      "category": "direct_reuse",
+      "files": 110,
+      "bytes": 287844,
+      "version": "0.7.0",
+      "package_json_sha256": "0F77035453316F4180566539F7EC0FA277BF0BDB23B76A2C769405D2B126AFFF",
+      "directory_digest_sha256": "B3B89D63CF271C974B9D060853A6AEF376EC3952ABDC90BB27C4BA34EAFD50CA"
+    },
+    "ApprovedAssets": {
+      "category": "direct_reuse",
+      "files": 799,
+      "bytes": 51307340,
+      "directory_digest_sha256": "B4F85A872A325323B81DE38A19B6FC50BF2797DE7F00709E2146A0EBC3042258"
+    },
+    "ReusableFoundation/Gate5MinimalSlice": {
+      "category": "controlled_immutable_copy",
+      "integrity": "manifest_sha256_per_file",
+      "manifest": "ReusableFoundation/Gate5MinimalSlice/manifest.json",
+      "destination": "UnityProject/Assets/Generated/<lab_id>/Gate5Foundation",
+      "note": "Source and generated copy are read-only to Builder Agents."
+    },
+    "OptionalIntegrations/UnityMCP/Assets/Plugins/NuGet": {
+      "category": "disabled_optional_integration",
+      "files": 85,
+      "bytes": 18002717,
+      "mcp_package_version": "0.79.1",
+      "active_in_unity_project": false
+    },
+    "OptionalIntegrations/UnityMCP/AgentSkills.zip": {
+      "storage": "zip; counts and bytes describe the original documents inside",
+      "category": "disabled_optional_integration",
+      "files": 77,
+      "bytes": 385976,
+      "active_in_agent_skill_discovery": false
+    },
+    "KnowledgeBase": {
+      "category": "conditional_reuse_knowledge_only_and_restricted_archive",
+      "integrity": "dynamic_blocker_recovery_append_only",
+      "note": "Clean run packs omit the restricted archive; verified blocker recovery may append only to its own current-run lesson."
+    },
+    "LabSpecs": {
+      "category": "knowledge_only_and_generated_input",
+      "integrity": "per_run_generated"
+    },
+    "LabInterfaceContracts": {
+      "category": "single_run_generated_input",
+      "integrity": "per_run_generated"
+    },
+    "EMVRRoomAssembly": {
+      "path": "Policies/emvr-room-assembly.json",
+      "sha256": "6941DF22DC7B29223F2BBFE4C37372BD6C9C17C46A76A4C4EECEBDB01CFBC148",
+      "layout_revision": "emvrlabs-room-v1"
+    },
+    "EMVRRoomLighting": {
+      "path": "Policies/emvr-room-lighting.json",
+      "sha256": "1A22ABBE2E8C1F87307655224412F4BBC83C65C7376D5966BF01DDB76770B270",
+      "revision": "emvrlabs-ambient-lift-v3"
+    }
+  },
+  "boundary_verification": "run .agents/skills/build-unity-vr-lab-blind/scripts/verify_builder_pack.ps1"
+}

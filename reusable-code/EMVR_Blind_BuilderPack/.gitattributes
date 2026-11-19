@@ -1,0 +1,26 @@
+# Preserve reviewed bytes in the index, clones and GitHub source archives.
+# Frozen inputs include LF, CRLF and binary assets. Git must not normalize them.
+# Unity .lighting is published as LF; do not convert it or other frozen assets.
+* -text
+
+# Never run binary assets through end-of-line conversion.
+*.dll binary
+*.exe binary
+*.fbx binary
+*.gif binary
+*.jpeg binary
+*.jpg binary
+*.mp3 binary
+*.mp4 binary
+*.ogg binary
+*.otf binary
+*.pdf binary
+*.png binary
+*.psd binary
+*.tga binary
+*.ttf binary
+*.wav binary
+*.webm binary
+*.woff binary
+*.woff2 binary
+*.zip binary

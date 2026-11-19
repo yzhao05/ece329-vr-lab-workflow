@@ -1,0 +1,991 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from copy import deepcopy
+from difflib import SequenceMatcher
+from typing import Any
+
+from .knowledge_base import KNOWLEDGE
+from .models import DesignSession
+
+
+DESIGN_TEXT_FIELDS = (
+    "research_object",
+    "course_relationship",
+    "learning_objective",
+    "research_question",
+    "theoretical_framework",
+    "hypothesis",
+    "expected_phenomenon",
+    "conceptual_structure",
+)
+SUMMARY_FIELDS = (*DESIGN_TEXT_FIELDS, "baseline_comparisons")
+
+FACET_TO_DESIGN_FIELD = {
+    "direction_outline": "research_object",
+    "course_mapping": "course_relationship",
+    "learning_objective": "learning_objective",
+    "research_question": "research_question",
+    "theoretical_framework": "theoretical_framework",
+    "hypothesis": "hypothesis",
+    "conceptual_structure": "conceptual_structure",
+}
+DESIGN_FIELD_TO_FACET = {
+    value: key for key, value in FACET_TO_DESIGN_FIELD.items()
+}
+
+_DESIGN_FIELD_LABELS = {
+    "research_object": "研究对象",
+    "course_relationship": "课程关系",
+    "learning_objective": "学习目标",
+    "research_question": "研究问题",
+    "theoretical_framework": "理论依据",
+    "hypothesis": "假设",
+    "expected_phenomenon": "预期现象",
+    "conceptual_structure": "概念实验结构",
+}
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "；".join(
+            item for item in (_text(child) for child in value) if item
+        )
+    if isinstance(value, dict):
+        return "；".join(
+            item for item in (_text(child) for child in value.values()) if item
+        )
+    return str(value).strip() if value is not None else ""
+
+
+def _strip_repeated_field_heading(field: str, value: str) -> str:
+    """Remove a student-authored display heading from one field value.
+
+    Field content is rendered with its own heading later.  Keeping a copied
+    ``**heading is value**: explanation`` shell produces duplicated labels and
+    also preserves harmless heading typos.  This normalizer is target-aware:
+    it only strips a leading label when that label is sufficiently similar to
+    the field being written, and it preserves the actual design statement.
+    """
+
+    label = _DESIGN_FIELD_LABELS.get(field)
+    text = value.strip()
+    if not label or not text:
+        return text
+    exact = re.match(
+        rf"^(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*[：:]\s*(.+)$",
+        text,
+        re.DOTALL,
+    )
+    if exact:
+        return exact.group(1).strip()
+    bold = re.match(r"^\*\*([^*]{2,100})\*\*\s*[：:]?\s*(.*)$", text, re.DOTALL)
+    if not bold:
+        return text
+    heading_and_value = bold.group(1).strip()
+    remainder = bold.group(2).strip()
+    split = re.match(r"^(.{2,16}?)(?:是|为)\s*(.+)$", heading_and_value, re.DOTALL)
+    if not split:
+        return text
+    candidate_label = re.sub(r"[\s：:]+", "", split.group(1))
+    similarity = SequenceMatcher(
+        None,
+        candidate_label,
+        label,
+        autojunk=False,
+    ).ratio()
+    if similarity < 0.72:
+        return text
+    content = split.group(2).strip()
+    if remainder:
+        return f"{content}：{remainder}"
+    return content
+
+
+def _normalized(value: str) -> str:
+    return "".join(value.split()).casefold()
+
+
+def _migrate_seen_scenes_from_history(
+    session: DesignSession,
+    state: dict[str, Any],
+) -> None:
+    """Recover template identities for conversations created before this schema."""
+
+    if state.get("scene_history_migrated") is True:
+        return
+    from .knowledge_base import KNOWLEDGE
+
+    known_templates = [
+        *KNOWLEDGE.scene_templates,
+        *KNOWLEDGE.generic_scene_frames,
+    ]
+    by_title = {
+        _normalized(str(template.get("title") or "")): template
+        for template in known_templates
+        if str(template.get("title") or "").strip()
+    }
+    template_ids = state.get("seen_scene_template_ids", [])
+    signatures = state.get("seen_scene_signatures", [])
+    template_ids = template_ids if isinstance(template_ids, list) else []
+    signatures = signatures if isinstance(signatures, list) else []
+    for history_item in session.history:
+        output = history_item.get("output", {}) if isinstance(history_item, dict) else {}
+        payload = output.get("stage_payload", {}) if isinstance(output, dict) else {}
+        scenes = payload.get("exploration_scenes", []) if isinstance(payload, dict) else []
+        for scene in scenes if isinstance(scenes, list) else []:
+            if not isinstance(scene, dict):
+                continue
+            template_id = str(scene.get("scene_template_id") or "").strip()
+            signature = str(scene.get("scene_template_signature") or "").strip()
+            if not signature:
+                template = by_title.get(_normalized(str(scene.get("title") or "")))
+                if template is not None:
+                    signature = KNOWLEDGE.scene_signature(template)
+                    template_id = template_id or str(
+                        template.get("template_id") or ""
+                    ).strip()
+                    if not template_id:
+                        template_id = "generic_" + hashlib.sha256(
+                            signature.encode("utf-8")
+                        ).hexdigest()[:16]
+            if template_id and template_id not in template_ids:
+                template_ids.append(template_id)
+            if signature and signature not in signatures:
+                signatures.append(signature)
+    state["seen_scene_template_ids"] = template_ids
+    state["seen_scene_signatures"] = signatures
+    state["scene_history_migrated"] = True
+
+
+def _legacy_values(session: DesignSession) -> dict[str, str]:
+    idea = session.design_context.get("idea", {})
+    outline = session.design_context.get("experiment_outline_seed", {})
+    development = session.design_context.get("idea_development", {})
+    idea = idea if isinstance(idea, dict) else {}
+    outline = outline if isinstance(outline, dict) else {}
+    development = development if isinstance(development, dict) else {}
+    facets = development.get("facets", {})
+    facets = facets if isinstance(facets, dict) else {}
+
+    def facet_value(facet_id: str) -> str:
+        facet = facets.get(facet_id, {})
+        if not isinstance(facet, dict) or facet.get("status") != "CLEAR":
+            return ""
+        return _text(facet.get("evidence"))
+
+    hypothesis = facet_value("hypothesis") or _text(outline.get("hypothesis"))
+    original_as_confirmed_direction = (
+        _text(idea.get("original"))
+        if idea.get("course_scope_confirmed") is True
+        and idea.get("direction_locked") is True
+        else ""
+    )
+    return {
+        "research_object": (
+            facet_value("direction_outline")
+            or _text(outline.get("research_object"))
+            or _text(outline.get("core_phenomenon"))
+            or _text(idea.get("direction_summary"))
+            or _text(idea.get("current_focus"))
+            or original_as_confirmed_direction
+        ),
+        "course_relationship": (
+            facet_value("course_mapping")
+            or _text(outline.get("course_relationship"))
+            or _text(outline.get("course_relationships"))
+            or _text(idea.get("selected_course_relations"))
+        ),
+        "learning_objective": (
+            facet_value("learning_objective")
+            or _text(outline.get("learning_objective"))
+        ),
+        "research_question": (
+            facet_value("research_question")
+            or _text(outline.get("research_question"))
+        ),
+        "theoretical_framework": (
+            facet_value("theoretical_framework")
+            or _text(outline.get("theoretical_framework"))
+        ),
+        "hypothesis": hypothesis,
+        "expected_phenomenon": (
+            _text(outline.get("expected_phenomenon")) or hypothesis
+        ),
+        "conceptual_structure": (
+            facet_value("conceptual_structure")
+            or _text(outline.get("conceptual_structure"))
+        ),
+    }
+
+
+def _normalized_comparison_groups(value: Any) -> list[dict[str, Any]]:
+    """Return a stable, deduplicated public comparison snapshot."""
+
+    if not isinstance(value, list):
+        return []
+    groups: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        cases: list[str] = []
+        seen_cases: set[str] = set()
+        for item in raw.get("cases", []) if isinstance(raw.get("cases"), list) else []:
+            label = _text(item)[:240]
+            identity = _normalized(label)
+            if label and identity not in seen_cases:
+                cases.append(label)
+                seen_cases.add(identity)
+        recommended: list[str] = []
+        for item in raw.get("recommended_cases", []) \
+            if isinstance(raw.get("recommended_cases"), list) else []:
+            label = _text(item)[:240]
+            identity = _normalized(label)
+            if label and identity not in {_normalized(case) for case in recommended}:
+                recommended.append(label)
+        comparison_id = _text(raw.get("comparison_id"))[:100]
+        if not comparison_id:
+            material = json.dumps(
+                [raw.get("title"), cases or recommended, index],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            comparison_id = "comparison_" + hashlib.sha256(
+                material.encode("utf-8")
+            ).hexdigest()[:16]
+        if comparison_id in seen_ids:
+            continue
+        seen_ids.add(comparison_id)
+        group = deepcopy(raw)
+        group.update(
+            {
+                "comparison_id": comparison_id,
+                "title": _text(raw.get("title"))[:240],
+                "cases": cases,
+                "recommended_cases": recommended or list(cases),
+                "adoption_status": str(
+                    raw.get("adoption_status") or "PENDING"
+                ).upper(),
+            }
+        )
+        groups.append(group)
+    return groups
+
+
+def _legacy_comparisons(session: DesignSession) -> list[dict[str, Any]]:
+    idea = session.design_context.get("idea", {})
+    outline = session.design_context.get("experiment_outline_seed", {})
+    idea = idea if isinstance(idea, dict) else {}
+    outline = outline if isinstance(outline, dict) else {}
+    return _normalized_comparison_groups(
+        idea.get("standard_comparisons")
+        or outline.get("baseline_comparisons")
+        or []
+    )
+
+
+def ensure_design_state(session: DesignSession) -> dict[str, Any]:
+    """Return the canonical design snapshot, migrating legacy fields once.
+
+    The snapshot is the only cross-turn source of truth.  Legacy facet and
+    outline objects remain as compatibility projections for the existing UI
+    and report code; they are never allowed to erase a canonical value.
+    """
+
+    state = session.design_context.get("design_state")
+    if not isinstance(state, dict):
+        state = {}
+        session.design_context["design_state"] = state
+    state.setdefault("schema_version", 1)
+    state.setdefault("revision", 0)
+    state.setdefault("seen_scene_template_ids", [])
+    state.setdefault("seen_scene_signatures", [])
+    state.setdefault("pending_action", None)
+    state.setdefault("applied_update_ids", [])
+    state.setdefault("semantic_signatures", {})
+    state.setdefault("field_provenance", {})
+    state.setdefault("explicitly_cleared_fields", [])
+    state.setdefault("baseline_comparisons", [])
+    state.setdefault(
+        "topic_lock",
+        {
+            "locked": False,
+            "research_topic": "",
+            "confirmed_research_question": "",
+            "confirmed_comparisons": [],
+            "preserved_fields": [],
+        },
+    )
+    for field in DESIGN_TEXT_FIELDS:
+        state.setdefault(field, "")
+    if state.get("legacy_migrated") is not True:
+        for field, value in _legacy_values(session).items():
+            if not _text(state.get(field)) and value:
+                state[field] = value
+        state["legacy_migrated"] = True
+    else:
+        explicitly_cleared = {
+            str(item) for item in state.get("explicitly_cleared_fields", [])
+        }
+        for field, value in _legacy_values(session).items():
+            if (
+                field not in explicitly_cleared
+                and not _text(state.get(field))
+                and value
+            ):
+                state[field] = value
+    # Earlier sessions could seed the raw creation message into
+    # research_object before the student had established a course direction.
+    # Repair only that provenance-free, unconfirmed legacy shape; never
+    # inspect the wording and never clear a confirmed or explicitly updated
+    # research object.
+    idea = session.design_context.get("idea", {})
+    idea = idea if isinstance(idea, dict) else {}
+    original = _text(idea.get("original"))
+    provenance = state.get("field_provenance", {})
+    provenance = provenance if isinstance(provenance, dict) else {}
+    has_direction_evidence = any(
+        _text(idea.get(field))
+        for field in (
+            "topic_anchor",
+            "current_focus",
+            "main_direction",
+            "direction_summary",
+            "core_phenomenon",
+            "selected_focus",
+        )
+    )
+    if (
+        original
+        and _normalized(_text(state.get("research_object")))
+        == _normalized(original)
+        and not _text(provenance.get("research_object"))
+        and idea.get("direction_locked") is not True
+        and not has_direction_evidence
+    ):
+        state["research_object"] = ""
+    _migrate_seen_scenes_from_history(session, state)
+    if not state.get("baseline_comparisons"):
+        legacy_comparisons = _legacy_comparisons(session)
+        if legacy_comparisons:
+            state["baseline_comparisons"] = legacy_comparisons
+    return state
+
+
+def set_pending_action_snapshot(
+    session: DesignSession,
+    pending_action: dict[str, Any] | None,
+) -> None:
+    state = ensure_design_state(session)
+    state["pending_action"] = (
+        deepcopy(pending_action) if isinstance(pending_action, dict) else None
+    )
+
+
+def _merge_text(previous: str, addition: str) -> str:
+    previous = previous.strip()
+    addition = addition.strip()
+    if not previous:
+        return addition
+    if not addition or _normalized(addition) in _normalized(previous):
+        return previous
+    if _normalized(previous) in _normalized(addition):
+        return addition
+    return f"{previous}；补充：{addition}"
+
+
+def _update_identity(
+    action_id: str,
+    field: str,
+    operation: str,
+    value: str,
+) -> str:
+    material = json.dumps(
+        [action_id, field, operation, _normalized(value)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def apply_design_updates(
+    session: DesignSession,
+    updates: Any,
+    *,
+    pending_action: dict[str, Any] | None = None,
+    provenance: str = "STUDENT_CONFIRMED",
+) -> list[str]:
+    """Validate and idempotently commit semantic field updates."""
+
+    from .execution_diagnostics import record
+    def field_event(status, code, field=None, operation=None, **details):
+        record('field_write', status, handler='apply_design_updates', code=code,
+               field_path=field, operation=operation, provenance=provenance,
+               execution_revision=session.revision, **details)
+
+    if not isinstance(updates, list):
+        return []
+    state = ensure_design_state(session)
+    applied_ids = state.get("applied_update_ids", [])
+    if not isinstance(applied_ids, list):
+        applied_ids = []
+    known_ids = {str(item) for item in applied_ids}
+    semantic_signatures = state.get("semantic_signatures", {})
+    if not isinstance(semantic_signatures, dict):
+        semantic_signatures = {}
+    explicitly_cleared = {
+        str(item) for item in state.get("explicitly_cleared_fields", [])
+    }
+    field_provenance = state.get("field_provenance", {})
+    if not isinstance(field_provenance, dict):
+        field_provenance = {}
+    action_id = (
+        str(pending_action.get("action_id") or "")
+        if isinstance(pending_action, dict)
+        else ""
+    ) or f"revision:{session.revision}"
+    changed: list[str] = []
+    for raw in updates:
+        if not isinstance(raw, dict):
+            continue
+        field = str(raw.get("field") or raw.get("field_id") or "")
+        operation = str(raw.get("operation") or "REPLACE").upper()
+        if field not in DESIGN_TEXT_FIELDS or operation not in {
+            "MERGE",
+            "REPLACE",
+            "CLEAR",
+        }:
+            field_event("blocked", "invalid_field_or_operation", field, operation)
+            continue
+        value = "" if operation == "CLEAR" else _strip_repeated_field_heading(
+            field,
+            _text(raw.get("value")),
+        )[:4000]
+        if operation != "CLEAR" and not value:
+            field_event("blocked", "empty_value", field, operation)
+            continue
+        update_id = str(raw.get("update_id") or "").strip() or _update_identity(
+            action_id,
+            field,
+            operation,
+            value,
+        )
+        if update_id in known_ids:
+            field_event("success", "duplicate_update_skipped", field, operation, changed=False)
+            continue
+        previous = _text(state.get(field))
+        signature = str(raw.get("semantic_key") or "").strip().casefold()
+        if not signature:
+            signature = _normalized(value)
+        known_signatures = semantic_signatures.get(field, [])
+        known_signatures = (
+            [str(item) for item in known_signatures]
+            if isinstance(known_signatures, list)
+            else []
+        )
+        if operation == "MERGE":
+            next_value = (
+                previous
+                if signature and signature in known_signatures
+                else _merge_text(previous, value)
+            )
+        elif operation == "CLEAR":
+            next_value = ""
+        else:
+            next_value = value
+        field_event("success", "applied_to_memory", field, operation, changed=next_value != previous)
+        known_ids.add(update_id)
+        applied_ids.append(update_id)
+        if next_value != previous:
+            state[field] = next_value
+            changed.append(field)
+            records = field_provenance.get(field, [])
+            records = records if isinstance(records, list) else []
+            records.append(
+                {
+                    "revision": int(state.get("revision") or 0) + 1,
+                    "source": str(raw.get("provenance") or provenance)[:80],
+                    "operation": operation,
+                    "value": next_value[:1000],
+                }
+            )
+            field_provenance[field] = records[-30:]
+        if operation == "CLEAR":
+            explicitly_cleared.add(field)
+            semantic_signatures[field] = []
+        elif operation == "REPLACE":
+            explicitly_cleared.discard(field)
+            semantic_signatures[field] = [signature] if signature else []
+        else:
+            explicitly_cleared.discard(field)
+            if signature and signature not in known_signatures:
+                known_signatures.append(signature)
+                semantic_signatures[field] = known_signatures[-40:]
+    if changed:
+        state["revision"] = int(state.get("revision") or 0) + 1
+    state["applied_update_ids"] = applied_ids[-200:]
+    state["semantic_signatures"] = semantic_signatures
+    state["field_provenance"] = field_provenance
+    state["explicitly_cleared_fields"] = sorted(explicitly_cleared)
+    refresh_topic_lock(session)
+    return list(dict.fromkeys(changed))
+
+
+def ground_guided_course_relationship(
+    session: DesignSession,
+    changed_fields: list[str] | tuple[str, ...] | set[str],
+) -> list[str]:
+    """Align the guided course link with confirmed theory through the catalog.
+
+    ``course_relationship`` is a knowledge-backed explanation, not a place to
+    store an editing instruction such as "make it closer to the selected
+    theory".  Once the semantic layer has explicitly changed that field, or a
+    newly confirmed theory makes an older agent/scene suggestion stale, use
+    the formula-profile graph to materialize a concrete relationship.
+
+    This does not infer dialogue intent from words and it never chooses among
+    formula candidates for EMVR.  It only validates already committed guided
+    fields against the curated course graph.
+    """
+
+    if getattr(session.interaction_state, "value", "") != "GUIDED_DESIGN":
+        return []
+    changed = {str(item) for item in changed_fields}
+    if not changed.intersection({"course_relationship", "theoretical_framework"}):
+        return []
+    state = ensure_design_state(session)
+    theory = _text(state.get("theoretical_framework"))
+    if not theory:
+        # Course retrieval can propose candidates before the student has
+        # chosen an explanatory theory, but it must not silently turn that
+        # broad match into a confirmed course relationship.
+        return []
+    current_relationship = _text(state.get("course_relationship"))
+    grounding_text = " ".join(
+        item
+        for item in (
+            (
+                current_relationship
+                if "course_relationship" in changed
+                else ""
+            ),
+            theory,
+            _text(state.get("research_question")),
+            _text(state.get("research_object")),
+        )
+        if item
+    )
+    profiles = (
+        KNOWLEDGE.formula_design_references(current_relationship, limit=1)
+        if "course_relationship" in changed and current_relationship
+        else []
+    )
+    if not profiles:
+        profiles = KNOWLEDGE.formula_design_references(grounding_text, limit=1)
+    if not profiles:
+        return []
+    profile = profiles[0]
+    profile_id = str(profile.get("profile_id") or "").strip()
+    if not profile_id:
+        return []
+
+    # An explicit edit to the course relationship is always materialized from
+    # the matched profile.  For a theory-only edit, overwrite only an old
+    # system/scene-derived relationship; a student's independent, substantive
+    # mapping remains theirs to revise or compare in the quality review.
+    should_ground = "course_relationship" in changed
+    if not should_ground:
+        provenance = state.get("field_provenance", {})
+        records = (
+            provenance.get("course_relationship", [])
+            if isinstance(provenance, dict)
+            else []
+        )
+        latest_source = str(
+            records[-1].get("source") or ""
+            if isinstance(records, list) and records and isinstance(records[-1], dict)
+            else ""
+        )
+        should_ground = not current_relationship or latest_source in {
+            "AGENT_SUGGESTION",
+            "COURSE_RETRIEVAL",
+            "CONFIRMED_SCENE_DIRECTION",
+            "MIGRATED_LEGACY_STATE",
+        }
+    if not should_ground:
+        return []
+
+    title = str(profile.get("title_zh") or profile.get("title") or "").strip()
+    primary_names = list(
+        dict.fromkeys(
+            str(item.get("name") or item.get("title") or "").strip()
+            for item in profile.get("primary_formulas", [])
+            if isinstance(item, dict)
+            and str(item.get("name") or item.get("title") or "").strip()
+        )
+    )
+    variations = [
+        str(item.get("quantity") or "").strip()
+        for item in profile.get("supported_variations", [])
+        if isinstance(item, dict) and str(item.get("quantity") or "").strip()
+    ]
+    observations = [
+        str(item.get("quantity") or "").strip()
+        for item in profile.get("supported_observations", [])
+        if isinstance(item, dict) and str(item.get("quantity") or "").strip()
+    ]
+    formula_text = "、".join(primary_names[:3]) or title
+    relationship = f"{title}：用{formula_text}"
+    if variations and observations:
+        relationship += f"连接“{variations[0]}”与“{observations[0]}”"
+    relationship += "，作为当前研究问题的课程依据。"
+    if relationship == current_relationship:
+        return []
+    return apply_design_updates(
+        session,
+        [
+            {
+                "field": "course_relationship",
+                "operation": "REPLACE",
+                "value": relationship,
+                "semantic_key": f"course_profile:{profile_id}",
+                "provenance": "COURSE_KNOWLEDGE_ALIGNMENT",
+            }
+        ],
+        provenance="COURSE_KNOWLEDGE_ALIGNMENT",
+    )
+
+
+def refresh_topic_lock(
+    session: DesignSession,
+    *,
+    force_locked: bool | None = None,
+    preserved_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """Keep one canonical topic anchor across every interaction mode.
+
+    The lock protects already confirmed content from accidental resets.  It
+    does not prevent an explicit field-level edit; replacing the whole topic
+    still requires the separately validated NEW_TOPIC action.
+    """
+
+    state = ensure_design_state(session)
+    lock = state.get("topic_lock")
+    if not isinstance(lock, dict):
+        lock = {}
+        state["topic_lock"] = lock
+    idea = session.design_context.get("idea", {})
+    idea_locked = bool(
+        isinstance(idea, dict) and idea.get("direction_locked") is True
+    )
+    research_topic = _text(state.get("research_object"))
+    research_question = _text(state.get("research_question"))
+    comparisons = _normalized_comparison_groups(
+        state.get("baseline_comparisons", [])
+    )
+    was_locked = lock.get("locked") is True
+    lock["locked"] = (
+        bool(force_locked)
+        if force_locked is not None
+        else bool(was_locked or idea_locked or research_question)
+    )
+    if research_topic:
+        lock["research_topic"] = research_topic
+    else:
+        lock.setdefault("research_topic", "")
+    if research_question:
+        lock["confirmed_research_question"] = research_question
+    else:
+        lock.setdefault("confirmed_research_question", "")
+    if comparisons:
+        lock["confirmed_comparisons"] = deepcopy(comparisons)
+    else:
+        lock.setdefault("confirmed_comparisons", [])
+    preserved = {
+        str(item)
+        for item in lock.get("preserved_fields", [])
+        if str(item).strip()
+    }
+    preserved.update(
+        str(item)
+        for item in preserved_fields or []
+        if str(item).strip()
+    )
+    lock["preserved_fields"] = sorted(preserved)
+    if lock["locked"] and not lock.get("locked_at_revision"):
+        lock["locked_at_revision"] = int(state.get("revision") or 0)
+    return deepcopy(lock)
+
+
+def topic_lock_snapshot(session: DesignSession) -> dict[str, Any]:
+    return refresh_topic_lock(session)
+
+
+def is_topic_locked(session: DesignSession) -> bool:
+    return topic_lock_snapshot(session).get("locked") is True
+
+
+def design_updates_from_facets(
+    facet_updates: Any,
+    *,
+    evidence: str,
+) -> list[dict[str, Any]]:
+    """Compatibility bridge for older semantic responders and saved tests."""
+
+    if not isinstance(facet_updates, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for update in facet_updates:
+        if not isinstance(update, dict) or update.get("status") != "CLEAR":
+            continue
+        field = FACET_TO_DESIGN_FIELD.get(str(update.get("facet_id") or ""))
+        if not field:
+            continue
+        value = _text(update.get("value")) or evidence.strip()
+        if not value:
+            continue
+        result.append(
+            {
+                "field": field,
+                "operation": str(update.get("operation") or "REPLACE").upper(),
+                "value": value,
+            }
+        )
+        if field == "hypothesis":
+            result.append(
+                {
+                    "field": "expected_phenomenon",
+                    "operation": str(update.get("operation") or "REPLACE").upper(),
+                    "value": value,
+                }
+            )
+    return result
+
+
+def sync_design_state_to_legacy(session: DesignSession) -> None:
+    state = ensure_design_state(session)
+    outline = session.design_context.get("experiment_outline_seed")
+    if isinstance(outline, dict):
+        outline.update(
+            {
+                "research_object": _text(state.get("research_object")),
+                "course_relationship": _text(state.get("course_relationship")),
+                "learning_objective": _text(state.get("learning_objective")),
+                "research_question": _text(state.get("research_question")),
+                "theoretical_framework": _text(
+                    state.get("theoretical_framework")
+                ),
+                "hypothesis": _text(state.get("hypothesis")),
+                "expected_phenomenon": _text(
+                    state.get("expected_phenomenon")
+                ),
+                "conceptual_structure": _text(
+                    state.get("conceptual_structure")
+                ),
+            }
+        )
+        outline["baseline_comparisons"] = deepcopy(
+            state.get("baseline_comparisons", [])
+        )
+    idea = session.design_context.get("idea")
+    if isinstance(idea, dict):
+        idea["standard_comparisons"] = deepcopy(
+            state.get("baseline_comparisons", [])
+        )
+    development = session.design_context.get("idea_development")
+    facets = development.get("facets", {}) if isinstance(development, dict) else {}
+    if isinstance(facets, dict):
+        for field, facet_id in DESIGN_FIELD_TO_FACET.items():
+            value = _text(state.get(field))
+            facet = facets.get(facet_id)
+            if value and isinstance(facet, dict):
+                facet.update(
+                    {
+                        "status": "CLEAR",
+                        "evidence": value[:4000],
+                        "source": "CANONICAL_DESIGN_STATE",
+                    }
+                )
+            elif isinstance(facet, dict):
+                facet.update(
+                    {
+                        "status": "MISSING",
+                        "evidence": "",
+                        "source": None,
+                    }
+                )
+
+
+def record_seen_scenes(session: DesignSession, scenes: Any) -> None:
+    if not isinstance(scenes, list):
+        return
+    state = ensure_design_state(session)
+    template_ids = state.get("seen_scene_template_ids", [])
+    signatures = state.get("seen_scene_signatures", [])
+    template_ids = template_ids if isinstance(template_ids, list) else []
+    signatures = signatures if isinstance(signatures, list) else []
+    changed = False
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        template_id = str(scene.get("scene_template_id") or "").strip()
+        signature = str(scene.get("scene_template_signature") or "").strip()
+        if template_id and template_id not in template_ids:
+            template_ids.append(template_id)
+            changed = True
+        if signature and signature not in signatures:
+            signatures.append(signature)
+            changed = True
+    state["seen_scene_template_ids"] = template_ids
+    state["seen_scene_signatures"] = signatures
+    if changed:
+        state["revision"] = int(state.get("revision") or 0) + 1
+
+
+def seen_scene_signatures(session: DesignSession) -> set[str]:
+    state = ensure_design_state(session)
+    return {
+        str(item)
+        for item in state.get("seen_scene_signatures", [])
+        if str(item).strip()
+    }
+
+
+def design_state_snapshot(session: DesignSession) -> dict[str, Any]:
+    """Return public design fields without internal state-machine metadata."""
+
+    state = ensure_design_state(session)
+    comparisons = deepcopy(state.get("baseline_comparisons", []))
+    for comparison in comparisons if isinstance(comparisons, list) else []:
+        if isinstance(comparison, dict):
+            comparison.pop("semantic_key", None)
+            comparison.pop("case_semantic_keys", None)
+    return {
+        field: deepcopy(state.get(field, "")) for field in DESIGN_TEXT_FIELDS
+    } | {
+        "baseline_comparisons": comparisons,
+        "revision": int(state.get("revision") or 0),
+    }
+
+
+def set_baseline_comparisons(
+    session: DesignSession,
+    comparisons: Any,
+) -> list[dict[str, Any]]:
+    """Commit comparison groups to the canonical state and legacy projections."""
+
+    state = ensure_design_state(session)
+    normalized = _normalized_comparison_groups(comparisons)
+    if normalized != state.get("baseline_comparisons"):
+        state["baseline_comparisons"] = normalized
+        state["revision"] = int(state.get("revision") or 0) + 1
+    idea = session.design_context.get("idea")
+    if isinstance(idea, dict):
+        idea["standard_comparisons"] = deepcopy(normalized)
+    outline = session.design_context.get("experiment_outline_seed")
+    if isinstance(outline, dict):
+        outline["baseline_comparisons"] = deepcopy(normalized)
+    refresh_topic_lock(session)
+    return deepcopy(normalized)
+
+
+def baseline_comparisons_snapshot(session: DesignSession) -> list[dict[str, Any]]:
+    return deepcopy(ensure_design_state(session).get("baseline_comparisons", []))
+
+
+def _format_comparisons(comparisons: Any) -> str:
+    groups = _normalized_comparison_groups(comparisons)
+    rendered: list[str] = []
+    for group in groups:
+        # Course-catalog suggestions remain available to the semantic parser,
+        # but they are not part of the student's canonical design until the
+        # student accepts or modifies them.
+        if group.get("adoption_status") == "PENDING":
+            continue
+        cases = group.get("cases") or group.get("recommended_cases") or []
+        if not cases or group.get("adoption_status") == "REJECTED":
+            continue
+        title = str(group.get("title") or "").strip()
+        cases_text = "、".join(str(case) for case in cases)
+        title_identity = _normalized(title)
+        case_identities = {
+            _normalized(str(case)) for case in cases if str(case).strip()
+        }
+        # A student-created comparison may use the same phrase for its title
+        # and only case.  The title is metadata, not a second design item, so
+        # do not render the same content twice.
+        redundant_title = bool(
+            title_identity
+            and any(
+                title_identity == identity
+                or title_identity in identity
+                or identity in title_identity
+                for identity in case_identities
+                if identity
+            )
+        )
+        rendered.append(
+            f"{title}：{cases_text}"
+            if title and not redundant_title
+            else cases_text
+        )
+    return "；".join(rendered) or "暂未明确"
+
+
+def format_design_summary(
+    session: DesignSession,
+    requested_fields: list[str] | None = None,
+) -> str:
+    state = ensure_design_state(session)
+    labels = (
+        ("research_object", "研究对象"),
+        ("course_relationship", "课程关系"),
+        ("learning_objective", "学习目标"),
+        ("research_question", "研究问题"),
+        ("theoretical_framework", "理论依据"),
+        ("hypothesis", "假设"),
+        ("expected_phenomenon", "预期现象"),
+        ("conceptual_structure", "概念实验结构"),
+    )
+    allowed = {
+        str(field) for field in requested_fields or [] if str(field) in SUMMARY_FIELDS
+    }
+    selected = (
+        tuple(item for item in labels if item[0] in allowed)
+        if allowed
+        else labels
+    )
+    lines: list[str] = []
+    selected_fields = {field for field, _label in selected}
+    hypothesis = _text(state.get("hypothesis"))
+    expected = _text(state.get("expected_phenomenon"))
+    for field, label in selected:
+        if (
+            field == "expected_phenomenon"
+            and "hypothesis" in selected_fields
+            and hypothesis
+            and _normalized(hypothesis) == _normalized(expected)
+        ):
+            continue
+        if (
+            field == "hypothesis"
+            and "expected_phenomenon" in selected_fields
+            and hypothesis
+            and _normalized(hypothesis) == _normalized(expected)
+        ):
+            lines.append(f"• 假设与预期现象：{hypothesis}")
+            continue
+        lines.append(f"• {label}：{_text(state.get(field)) or '暂未明确'}")
+    if not allowed or "baseline_comparisons" in allowed:
+        comparison_line = f"• 基础比较：{_format_comparisons(state.get('baseline_comparisons'))}"
+        if not allowed:
+            insertion = 4 if len(lines) >= 4 else len(lines)
+            lines.insert(insertion, comparison_line)
+        else:
+            lines.append(comparison_line)
+    return "\n".join(lines)

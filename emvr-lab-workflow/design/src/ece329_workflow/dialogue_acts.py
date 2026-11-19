@@ -1,0 +1,1053 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from copy import deepcopy
+from typing import Any
+
+from .design_state import FACET_TO_DESIGN_FIELD
+from .builder_requirements import (
+    BUILDER_REQUIREMENT_FIELDS,
+    BUILDER_REQUIREMENT_SPECS,
+)
+from .emvr_design import EMVR_EDITABLE_FIELDS, EMVR_LIST_FIELDS, apply_emvr_field_updates
+from .emvr_formula_flow import (
+    EMVR_FORMULA_ACTION_TYPES,
+    normalize_formula_flow_action,
+)
+from .models import DesignSession, InteractionState, Stage
+
+
+DIALOGUE_ACT_TYPES = frozenset(
+    {
+        "ANSWER_PENDING_QUESTION",
+        "MODIFY_DESIGN_FIELD",
+        "MODIFY_STAGE_FIELD",
+        "MODIFY_EMVR_FIELD",
+        "MODIFY_COMPARISON",
+        "ASK_COURSE_QUESTION",
+        "REQUEST_REFERENCE",
+        "REQUEST_SUMMARY",
+        "REQUEST_QUALITY_REVIEW",
+        "COMPARE_OPTIONS",
+        "VERSION_CONTROL",
+        "CORRECT_ASSISTANT",
+        "CONTROL",
+        # Topic navigation and topic content are separate.  ``NEW_TOPIC`` is
+        # retained only as a content-bearing compatibility action.
+        "REQUEST_NEW_TOPIC",
+        "NEW_TOPIC_CONTENT",
+        "NEW_TOPIC",
+        # EMVR-only formula-first onboarding. These actions update the
+        # candidate/selection state; they never write ordinary design fields.
+        *EMVR_FORMULA_ACTION_TYPES,
+        "UNRESOLVED",
+    }
+)
+
+DESIGN_ACT_FIELD_ORDER = (
+    "research_object",
+    "course_relationship",
+    "learning_objective",
+    "research_question",
+    "theoretical_framework",
+    "hypothesis",
+    "expected_phenomenon",
+    "conceptual_structure",
+)
+DESIGN_ACT_FIELDS = frozenset(DESIGN_ACT_FIELD_ORDER)
+
+STAGE_ACT_FIELD_ORDER = (
+    "independent_variable",
+    "observations",
+    "controlled_conditions",
+    "procedure_steps",
+    "visualization_plan",
+    "result_interpretation",
+    "design_rationale",
+    "design_value",
+    "limitations",
+    "unity_objects",
+    "interactions",
+    # Builder requirements are the single source of truth.  Deriving these
+    # write targets prevents a newly required PDF field from becoming an
+    # unwriteable pending question that repeats indefinitely.
+    *(str(spec["field"]) for spec in BUILDER_REQUIREMENT_SPECS),
+    # EMVR report fields that can be the direct subject of an open stage
+    # question.  Keeping them writable at field level prevents a clear answer
+    # from being stored as an unbound candidate and replayed indefinitely.
+    "research_hypothesis",
+    "expected_trend",
+    "limiting_cases",
+    "trend_annotation",
+    "unity_update_event",
+    # Later EMVR report rows that students may revise directly.  These remain
+    # plain stage values; structured formula maps and object inventories stay
+    # state-machine generated and are deliberately not writable here.
+    "physical_mechanism",
+    "simulation_inputs",
+    "calculated_outputs",
+    "physics_layer",
+    "visualization_layer",
+    "measurement_interface",
+    "reference_condition",
+    "comparison_logic",
+    "if_prediction_supported",
+    "if_opposite_trend",
+    "if_no_clear_change",
+    "conceptual_feasibility",
+    "teaching_value",
+    "vr_added_value",
+    "student_summary",
+)
+STAGE_ACT_FIELDS = frozenset(STAGE_ACT_FIELD_ORDER)
+
+# Canonical design collections are state-machine owned like text fields, but
+# use dedicated update contracts because replacing one item must not overwrite
+# the whole design.  They are nevertheless valid correction targets: a student
+# can point out an incorrect comparison bundle and provide its replacement in
+# the same sentence.
+COLLECTION_ACT_FIELDS = frozenset({"baseline_comparisons"})
+
+CONTROL_TARGETS = frozenset(
+    {
+        "ACCEPT",
+        "REJECT",
+        "ADVANCE",
+        "KEEP_CURRENT",
+        "RETURN",
+        "ACCEPT_QUALITY_REVIEW",
+        "REQUEST_NEW_TOPIC",
+    }
+)
+
+
+def keeps_current_design(acts: Any, message: str) -> bool:
+    """A semantic no-edit/continue decision, grounded in the entire current turn.
+
+    No command vocabulary: the resolver labels intent; source coverage prevents
+    a lone 'continue' clause from swallowing an accompanying unresolved edit.
+    """
+    if not isinstance(acts, list) or not acts or not isinstance(message, str):
+        return False
+    targets, covered = set(), set()
+    for act in acts:
+        if not isinstance(act, dict) or act.get('type') != 'CONTROL':
+            return False
+        if act.get('target') not in {'KEEP_CURRENT', 'ADVANCE'}:
+            return False
+        try:
+            if not 0.8 <= float(act.get('confidence', 0)) <= 1:
+                return False
+        except (ValueError, TypeError):
+            return False
+        source = act.get('source_text')
+        if not isinstance(source, str) or not source.strip():
+            return False
+        start, end = act.get('source_start'), act.get('source_end')
+        if type(start) is int and type(end) is int and 0 <= start < end <= len(message):
+            if message[start:end] != source:
+                return False
+        else:
+            if message.count(source) != 1:
+                return False
+            start, end = message.index(source), message.index(source) + len(source)
+        covered.update(range(start, end))
+        targets.add(act['target'])
+    return targets == {'KEEP_CURRENT', 'ADVANCE'} and all(
+        not char.isalnum() or index in covered for index, char in enumerate(message))
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "；".join(part for part in (_text(item) for item in value) if part)
+    if isinstance(value, dict):
+        return "；".join(part for part in (_text(item) for item in value.values()) if part)
+    return str(value).strip() if value is not None else ""
+
+
+def _act_identity(act_type: str, target: str, operation: str, content: Any) -> str:
+    material = json.dumps(
+        [act_type, target, operation, content],
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return "act_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _normalize_comparison_contract(
+    value: Any,
+    *,
+    operation: str = "",
+) -> dict[str, Any] | None:
+    """Normalize comparison edits into the state-machine contract.
+
+    Ordinary field edits use ``MERGE/REPLACE/CLEAR`` while comparison edits
+    use ``MODIFY/REJECT``.  A semantic model may preserve the ordinary edit
+    verb after correctly identifying the comparison target.  Treat that as a
+    schema dialect instead of discarding the student's explicit revision.
+    """
+
+    if not isinstance(value, dict):
+        return None
+    normalized = deepcopy(value)
+    action = str(normalized.get("action") or operation or "").upper()
+    if action == "REPLACE":
+        action = "MODIFY"
+        normalized["replace_all"] = True
+    elif action == "MERGE":
+        action = "MODIFY"
+        normalized["merge_with_existing"] = True
+    elif action == "CLEAR":
+        action = "REJECT"
+    if action not in {"ACCEPT", "MODIFY", "REJECT", "CREATE"}:
+        return None
+    normalized["action"] = action
+    return normalized
+
+
+def normalize_dialogue_acts(
+    raw: Any,
+    *,
+    pending_action: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Validate each model-authored act independently.
+
+    Invalid acts are returned as unresolved items instead of invalidating other
+    executable acts from the same student message.
+    """
+
+    if not isinstance(raw, list):
+        return [], []
+    pending_subject = (
+        str(pending_action.get("subject") or "").strip()
+        if isinstance(pending_action, dict)
+        else ""
+    )
+    accepted: list[dict[str, Any]] = []
+    unresolved: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    def reject(detail):
+        from .execution_diagnostics import record
+        record('action_validation', 'blocked', validator='normalize_dialogue_acts',
+               code='invalid_dialogue_action', field_path=f'dialogue_acts[{index}]',
+               rejected_action={k: item.get(k) for k in ('type', 'target', 'operation', 'confidence')} if isinstance(item, dict) else None,
+               rule=detail.get('reason'))
+        unresolved.append(detail)
+
+    if len(raw) > 16:
+        from .execution_diagnostics import record
+        record('action_validation', 'blocked', validator='normalize_dialogue_acts',
+               code='action_limit', field_path='dialogue_acts', limit=16, actual=len(raw))
+    for index, item in enumerate(raw[:16]):
+        if not isinstance(item, dict):
+            reject({"content": _text(item), "reason": "动作格式不完整"})
+            continue
+        act_type = str(item.get("type") or "").upper()
+        target = str(item.get("target") or "").strip()
+        operation = str(item.get("operation") or "MERGE").upper()
+        content = deepcopy(item.get("content"))
+        try:
+            confidence = float(item.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        read_only_request = act_type in {'REQUEST_REFERENCE', 'ASK_COURSE_QUESTION', 'REQUEST_SUMMARY', 'REQUEST_QUALITY_REVIEW'}
+        if act_type not in DIALOGUE_ACT_TYPES or (confidence < 0.55 and not read_only_request):
+            reject(
+                {"content": _text(content), "reason": "动作类型或置信度不足"}
+            )
+            continue
+        if act_type == "ANSWER_PENDING_QUESTION":
+            target = target or pending_subject
+            valid_answer_targets = {
+                pending_subject,
+                *DESIGN_ACT_FIELDS,
+                *STAGE_ACT_FIELDS,
+                *EMVR_EDITABLE_FIELDS,
+                *FACET_TO_DESIGN_FIELD,
+            }
+            if (
+                not target
+                or target not in valid_answer_targets
+                or not _text(content)
+            ):
+                reject(
+                    {"content": _text(content), "reason": "未能绑定到当前待明确内容"}
+                )
+                continue
+            operation = operation if operation in {"MERGE", "REPLACE"} else "REPLACE"
+        elif act_type == "MODIFY_DESIGN_FIELD":
+            if target not in DESIGN_ACT_FIELDS or operation not in {
+                "MERGE",
+                "REPLACE",
+                "CLEAR",
+            }:
+                reject(
+                    {"content": _text(content), "reason": "设计字段或操作无效"}
+                )
+                continue
+            if operation != "CLEAR" and not _text(content):
+                reject({"content": "", "reason": f"{target}缺少修改内容"})
+                continue
+        elif act_type == "MODIFY_STAGE_FIELD":
+            if target not in STAGE_ACT_FIELDS or operation not in {
+                "MERGE",
+                "REPLACE",
+                "CLEAR",
+            }:
+                reject(
+                    {"content": _text(content), "reason": "阶段字段或操作无效"}
+                )
+                continue
+        elif act_type == "MODIFY_EMVR_FIELD":
+            if target not in EMVR_EDITABLE_FIELDS or operation not in {
+                "MERGE",
+                "REPLACE",
+                "CLEAR",
+            }:
+                reject(
+                    {"content": _text(content), "reason": "EMVR字段或操作无效"}
+                )
+                continue
+            if operation != "CLEAR" and not _text(content):
+                reject({"content": "", "reason": f"{target}缺少修改内容"})
+                continue
+        elif act_type == "MODIFY_COMPARISON":
+            content = _normalize_comparison_contract(
+                content,
+                operation=operation,
+            )
+            if content is None:
+                reject(
+                    {"content": _text(content), "reason": "基础比较修改缺少结构"}
+                )
+                continue
+        elif act_type in {"ASK_COURSE_QUESTION", "UNRESOLVED"}:
+            if not _text(content):
+                reject({"content": "", "reason": "动作缺少内容"})
+                continue
+        elif act_type == "CORRECT_ASSISTANT":
+            if not _text(content):
+                reject({"content": "", "reason": "纠错动作缺少内容"})
+                continue
+        elif act_type == "VERSION_CONTROL":
+            if not isinstance(content, dict) or str(content.get("action") or "").upper() not in {
+                "VIEW_RECENT",
+                "UNDO_LAST",
+                "RESTORE",
+                "COMPARE",
+            }:
+                reject({"content": _text(content), "reason": "版本操作缺少结构"})
+                continue
+            operation = "EXECUTE"
+        elif act_type == "COMPARE_OPTIONS":
+            if not isinstance(content, (list, dict)) or not _text(content):
+                reject({"content": _text(content), "reason": "缺少待比较方案"})
+                continue
+            operation = "EXECUTE"
+        elif act_type == "REQUEST_QUALITY_REVIEW":
+            operation = "EXECUTE"
+        elif act_type == "CONTROL":
+            target = target.upper()
+            if target not in CONTROL_TARGETS:
+                reject(
+                    {"content": _text(content), "reason": "会话控制动作无效"}
+                )
+                continue
+            operation = "EXECUTE"
+        elif act_type == "REQUEST_NEW_TOPIC":
+            target = "REQUEST_NEW_TOPIC"
+            content = None
+            operation = "EXECUTE"
+        elif act_type in EMVR_FORMULA_ACTION_TYPES:
+            content = normalize_formula_flow_action(act_type, content)
+            if content is None:
+                reject(
+                    {"content": _text(item.get("content")), "reason": "EMVR公式入口动作缺少有效结构"}
+                )
+                continue
+            operation = "EXECUTE"
+        elif act_type in {"NEW_TOPIC_CONTENT", "NEW_TOPIC"}:
+            if not _text(content):
+                reject({"content": "", "reason": "新实验方向缺少具体内容"})
+                continue
+            operation = "EXECUTE"
+        elif act_type in {"REQUEST_REFERENCE", "REQUEST_SUMMARY"}:
+            operation = "EXECUTE"
+        act_id = str(item.get("act_id") or "").strip()[:100] or _act_identity(
+            act_type,
+            target,
+            operation,
+            content,
+        )
+        if act_id in seen_ids:
+            continue
+        seen_ids.add(act_id)
+        normalized = {
+            "act_id": act_id,
+            "type": act_type,
+            "target": target,
+            "operation": operation,
+            "content": content,
+            "confidence": max(0.0, min(confidence, 1.0)),
+        }
+        # Exact source spans let the resolver prove that every independent
+        # request in a long turn was considered. They are trace metadata only
+        # and never influence which field is writable.
+        source_text = str(item.get("source_text") or "").strip()[:1200]
+        if source_text:
+            normalized["source_text"] = source_text
+        try:
+            source_start = int(item.get("source_start"))
+            source_end = int(item.get("source_end"))
+        except (TypeError, ValueError):
+            source_start = source_end = -1
+        if 0 <= source_start < source_end:
+            normalized["source_start"] = source_start
+            normalized["source_end"] = source_end
+        semantic_key = str(item.get("semantic_key") or "").strip()[:180]
+        if semantic_key:
+            normalized["semantic_key"] = semantic_key
+        accepted.append(normalized)
+        if act_type == "UNRESOLVED":
+            reject(
+                {"content": _text(content), "reason": "需要进一步确认"}
+            )
+    return accepted, unresolved
+
+
+def compile_dialogue_acts(
+    acts: list[dict[str, Any]],
+    *,
+    pending_action: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compile independent acts into validated state-machine operations."""
+
+    pending_subject = (
+        str(pending_action.get("subject") or "").strip()
+        if isinstance(pending_action, dict)
+        else ""
+    )
+    emvr_context = bool(
+        isinstance(pending_action, dict)
+        and pending_action.get("interaction_state")
+        == InteractionState.EMVR_DIRECT.value
+    )
+    pending_answer_fields = (
+        [
+            str(field).strip()
+            for field in pending_action.get("answer_fields", [])
+            if str(field).strip()
+            in {
+                *DESIGN_ACT_FIELDS,
+                *STAGE_ACT_FIELDS,
+                *EMVR_EDITABLE_FIELDS,
+                *FACET_TO_DESIGN_FIELD,
+            }
+        ]
+        if isinstance(pending_action, dict)
+        and isinstance(pending_action.get("answer_fields"), list)
+        else []
+    )
+    design_updates: list[dict[str, Any]] = []
+    facet_updates: list[dict[str, Any]] = []
+    stage_field_updates: list[dict[str, Any]] = []
+    emvr_field_updates: list[dict[str, Any]] = []
+    comparison_updates: list[dict[str, Any]] = []
+    questions: list[str] = []
+    feedback: list[str] = []
+    correction_items: list[dict[str, Any]] = []
+    quality_review_requests: list[dict[str, Any]] = []
+    option_comparison_requests: list[Any] = []
+    version_requests: list[dict[str, Any]] = []
+    controls: list[str] = []
+    emvr_formula_actions: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    answered_pending = False
+    for act in acts:
+        act_type = str(act.get("type") or "")
+        target = str(act.get("target") or "")
+        operation = str(act.get("operation") or "MERGE")
+        content = deepcopy(act.get("content"))
+        act_id = str(act.get("act_id") or "")
+        semantic_key = str(act.get("semantic_key") or "").strip()
+        if act_type == "ANSWER_PENDING_QUESTION":
+            # The pending subject can be a public stage id while the useful
+            # answer targets one concrete field inside that stage.  The act
+            # type—not surface wording—declares that this content answers the
+            # open question, so preserve the field-level target and clear the
+            # pending item independently.
+            # This act explicitly means "answer the visible pending question".
+            # When that question has exactly one writable target, it outranks
+            # a model-authored but incompatible label (for example classifying
+            # a lab title as a course relationship). Cross-field edits must be
+            # emitted as their own MODIFY_* acts.
+            if len(pending_answer_fields) == 1:
+                target = pending_answer_fields[0]
+            elif (
+                target == pending_subject
+                and len(pending_answer_fields) > 1
+                and isinstance(content, dict)
+            ):
+                field_values = [
+                    (field, deepcopy(content.get(field)))
+                    for field in pending_answer_fields
+                    if content.get(field) not in (None, "", [], {})
+                ]
+                for field, value in field_values:
+                    canonical = FACET_TO_DESIGN_FIELD.get(field, field)
+                    update = {
+                        "field": canonical,
+                        "operation": operation,
+                        "value": value,
+                        "update_id": f"{act_id}:{field}",
+                        "semantic_key": semantic_key,
+                    }
+                    if canonical in DESIGN_ACT_FIELDS:
+                        design_updates.append(update)
+                    elif emvr_context and canonical in EMVR_LIST_FIELDS:
+                        emvr_field_updates.append(
+                            {
+                                "field_id": canonical,
+                                "operation": operation,
+                                "value": value,
+                                "update_id": f"{act_id}:{field}",
+                                "semantic_key": semantic_key,
+                            }
+                        )
+                    elif canonical in STAGE_ACT_FIELDS:
+                        stage_field_updates.append(update)
+                    elif canonical in EMVR_EDITABLE_FIELDS:
+                        emvr_field_updates.append(
+                            {
+                                "field_id": canonical,
+                                "operation": operation,
+                                "value": value,
+                                "update_id": f"{act_id}:{field}",
+                                "semantic_key": semantic_key,
+                            }
+                        )
+                answered_pending = answered_pending or bool(field_values)
+                if not field_values:
+                    unresolved.append(_text(content))
+                continue
+            field = FACET_TO_DESIGN_FIELD.get(target)
+            if field:
+                design_updates.append(
+                    {
+                        "field": field,
+                        "operation": operation,
+                        "value": content,
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+                facet_updates.append(
+                    {
+                        "facet_id": target,
+                        "status": "CLEAR",
+                        "operation": operation,
+                        "value": content,
+                    }
+                )
+                answered_pending = True
+            elif target in DESIGN_ACT_FIELDS:
+                design_updates.append(
+                    {
+                        "field": target,
+                        "operation": operation,
+                        "value": content,
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+                answered_pending = True
+            elif emvr_context and target in EMVR_LIST_FIELDS:
+                emvr_field_updates.append(
+                    {
+                        "field_id": target,
+                        "operation": operation,
+                        "value": content,
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+                answered_pending = True
+            elif target in STAGE_ACT_FIELDS:
+                stage_field_updates.append(
+                    {
+                        "field": target,
+                        "operation": operation,
+                        "value": content,
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+                answered_pending = True
+            elif target in EMVR_EDITABLE_FIELDS:
+                emvr_field_updates.append(
+                    {
+                        "field_id": target,
+                        "operation": operation,
+                        "value": content,
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+                answered_pending = True
+            else:
+                # A multi-field stage answer must be split into canonical
+                # targets by the semantic parser. Do not clear the pending
+                # item when no field-level state update was produced.
+                unresolved.append(_text(content))
+        elif act_type == "MODIFY_DESIGN_FIELD":
+            design_updates.append(
+                {
+                    "field": target,
+                    "operation": operation,
+                    "value": content,
+                    "update_id": act_id,
+                    "semantic_key": semantic_key,
+                }
+            )
+            facet_id = next(
+                (
+                    facet
+                    for facet, field in FACET_TO_DESIGN_FIELD.items()
+                    if field == target
+                ),
+                None,
+            )
+            if facet_id and operation != "CLEAR":
+                facet_updates.append(
+                    {
+                        "facet_id": facet_id,
+                        "status": "CLEAR",
+                        "operation": operation,
+                        "value": content,
+                    }
+                )
+        elif act_type == "MODIFY_STAGE_FIELD":
+            if emvr_context and target in EMVR_LIST_FIELDS:
+                emvr_field_updates.append(
+                    {
+                        "field_id": target,
+                        "operation": operation,
+                        "value": deepcopy(content),
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+            else:
+                stage_field_updates.append(
+                    {
+                        "field": target,
+                        "operation": operation,
+                        "value": content,
+                        "update_id": act_id,
+                        "semantic_key": semantic_key,
+                    }
+                )
+        elif act_type == "MODIFY_EMVR_FIELD":
+            emvr_field_updates.append(
+                {
+                    "field_id": target,
+                    "operation": operation,
+                    "value": deepcopy(content),
+                    "update_id": act_id,
+                    "semantic_key": str(act.get("semantic_key") or ""),
+                }
+            )
+        elif act_type == "MODIFY_COMPARISON" and isinstance(content, dict):
+            normalized_comparison = _normalize_comparison_contract(
+                content,
+                operation=operation,
+            )
+            if normalized_comparison is not None:
+                comparison_updates.append(normalized_comparison)
+        elif act_type == "ASK_COURSE_QUESTION":
+            questions.append(_text(content))
+        elif act_type == "CORRECT_ASSISTANT":
+            if isinstance(content, dict):
+                explanation = _text(
+                    content.get("explanation") or content.get("error") or content
+                )
+                if explanation:
+                    feedback.append(explanation)
+                correction = {
+                    "error_type": str(content.get("error_type") or "UNDERSTANDING_ERROR").upper()[:80],
+                    "explanation": explanation,
+                    "affected_fields": [
+                        str(field)
+                        for field in content.get("affected_fields", [])
+                        if isinstance(field, str)
+                        and field
+                        in {
+                            *DESIGN_ACT_FIELDS,
+                            *STAGE_ACT_FIELDS,
+                            *COLLECTION_ACT_FIELDS,
+                        }
+                    ][:8]
+                    if isinstance(content.get("affected_fields"), list)
+                    else [],
+                }
+                correction_items.append(correction)
+                for index, update in enumerate(
+                    content.get("design_updates", [])
+                    if isinstance(content.get("design_updates"), list)
+                    else []
+                ):
+                    if not isinstance(update, dict):
+                        continue
+                    field = str(update.get("field") or "")
+                    op = str(update.get("operation") or "REPLACE").upper()
+                    value = deepcopy(update.get("value"))
+                    if field in DESIGN_ACT_FIELDS and op in {"MERGE", "REPLACE", "CLEAR"}:
+                        design_updates.append(
+                            {
+                                "field": field,
+                                "operation": op,
+                                "value": value,
+                                "update_id": f"{act_id}:correction:design:{index}",
+                                "semantic_key": str(update.get("semantic_key") or ""),
+                                "provenance": "AGENT_SELF_CORRECTION",
+                            }
+                        )
+                for index, update in enumerate(
+                    content.get("stage_field_updates", [])
+                    if isinstance(content.get("stage_field_updates"), list)
+                    else []
+                ):
+                    if not isinstance(update, dict):
+                        continue
+                    field = str(update.get("field") or "")
+                    op = str(update.get("operation") or "REPLACE").upper()
+                    value = deepcopy(update.get("value"))
+                    if field in STAGE_ACT_FIELDS and op in {"MERGE", "REPLACE", "CLEAR"}:
+                        stage_field_updates.append(
+                            {
+                                "field": field,
+                                "operation": op,
+                                "value": value,
+                                "update_id": f"{act_id}:correction:stage:{index}",
+                                "semantic_key": str(update.get("semantic_key") or ""),
+                                "provenance": "AGENT_SELF_CORRECTION",
+                            }
+                        )
+                for index, update in enumerate(
+                    content.get("comparison_updates", [])
+                    if isinstance(content.get("comparison_updates"), list)
+                    else []
+                ):
+                    if not isinstance(update, dict):
+                        continue
+                    normalized = _normalize_comparison_contract(update)
+                    if normalized is None:
+                        continue
+                    normalized.setdefault(
+                        "update_id",
+                        f"{act_id}:correction:comparison:{index}",
+                    )
+                    normalized.setdefault("provenance", "AGENT_SELF_CORRECTION")
+                    comparison_updates.append(normalized)
+            else:
+                feedback.append(_text(content))
+                correction_items.append(
+                    {
+                        "error_type": "UNDERSTANDING_ERROR",
+                        "explanation": _text(content),
+                        "affected_fields": [],
+                    }
+                )
+        elif act_type == "REQUEST_QUALITY_REVIEW":
+            quality_review_requests.append(
+                {
+                    "scope": str(target or "CURRENT_DESIGN")[:120],
+                    "content": deepcopy(content),
+                }
+            )
+        elif act_type == "COMPARE_OPTIONS":
+            option_comparison_requests.append(deepcopy(content))
+        elif act_type == "VERSION_CONTROL" and isinstance(content, dict):
+            version_requests.append(deepcopy(content))
+        elif act_type == "CONTROL":
+            controls.append(target)
+        elif act_type == "REQUEST_NEW_TOPIC":
+            controls.append("REQUEST_NEW_TOPIC")
+        elif act_type in EMVR_FORMULA_ACTION_TYPES:
+            emvr_formula_actions.append(
+                {
+                    "type": act_type,
+                    "content": deepcopy(content),
+                    "act_id": act_id,
+                }
+            )
+        elif act_type == "REQUEST_REFERENCE":
+            controls.append("REQUEST_REFERENCE")
+        elif act_type == "REQUEST_SUMMARY":
+            controls.append("REQUEST_SUMMARY")
+        elif act_type in {"NEW_TOPIC_CONTENT", "NEW_TOPIC"}:
+            controls.append("NEW_TOPIC_CONTENT")
+        elif act_type == "UNRESOLVED":
+            unresolved.append(_text(content))
+    return {
+        "design_updates": design_updates,
+        "facet_updates": facet_updates,
+        "stage_field_updates": stage_field_updates,
+        "emvr_field_updates": emvr_field_updates,
+        "comparison_updates": comparison_updates,
+        "student_questions": list(dict.fromkeys(item for item in questions if item)),
+        "feedback_items": list(dict.fromkeys(item for item in feedback if item)),
+        "correction_items": correction_items,
+        "quality_review_requests": quality_review_requests,
+        "option_comparison_requests": option_comparison_requests,
+        "version_requests": version_requests,
+        "control_actions": list(dict.fromkeys(controls)),
+        "emvr_formula_actions": emvr_formula_actions,
+        "unresolved_content": list(dict.fromkeys(item for item in unresolved if item)),
+        "answered_pending": answered_pending,
+    }
+
+
+def apply_stage_field_updates(
+    session: DesignSession,
+    updates: Any,
+    *,
+    stage: Stage,
+    provenance: str = "STUDENT_CONFIRMED",
+    mirror_aliases: bool = True,
+) -> list[str]:
+    """Idempotently commit later-stage fields without copying the whole turn."""
+
+    from .execution_diagnostics import record
+    def field_event(status, code, field=None, operation=None, **details):
+        record('field_write', status, handler='apply_stage_field_updates', code=code,
+               field_path=field, operation=operation, provenance=provenance,
+               execution_revision=session.revision, **details)
+
+    if not isinstance(updates, list):
+        return []
+    state = session.design_context.setdefault("stage_design_state", {})
+    if not isinstance(state, dict):
+        state = {}
+        session.design_context["stage_design_state"] = state
+    applied_ids = state.setdefault("applied_update_ids", [])
+    if not isinstance(applied_ids, list):
+        applied_ids = []
+        state["applied_update_ids"] = applied_ids
+    known_ids = {str(item) for item in applied_ids}
+    semantic_signatures = state.setdefault("semantic_signatures", {})
+    if not isinstance(semantic_signatures, dict):
+        semantic_signatures = {}
+        state["semantic_signatures"] = semantic_signatures
+    field_provenance = state.setdefault("field_provenance", {})
+    if not isinstance(field_provenance, dict):
+        field_provenance = {}
+        state["field_provenance"] = field_provenance
+    explicitly_cleared = {
+        str(item)
+        for item in state.get("explicitly_cleared_fields", [])
+        if str(item) in STAGE_ACT_FIELDS
+    } if isinstance(state.get("explicitly_cleared_fields", []), list) else set()
+    emvr = session.design_context.get("emvr_design", {})
+    emvr = emvr if isinstance(emvr, dict) else {}
+    emvr_explicitly_cleared = {
+        str(item)
+        for item in emvr.get("explicitly_cleared_fields", [])
+        if str(item)
+    } if isinstance(emvr.get("explicitly_cleared_fields", []), list) else set()
+    changed: list[str] = []
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "")
+        operation = str(item.get("operation") or "MERGE").upper()
+        if field not in STAGE_ACT_FIELDS or operation not in {
+            "MERGE",
+            "REPLACE",
+            "CLEAR",
+        }:
+            field_event("blocked", "invalid_field_or_operation", field, operation)
+            continue
+        # The approved implementation is a complete document, not a short
+        # conversational field. Truncating it silently discarded its tail.
+        value = "" if operation == "CLEAR" else _text(item.get("value"))
+        if field == "procedure_steps" and operation != "CLEAR" and isinstance(item.get("value"), list):
+            value = "\n".join(_text(step) for step in item["value"] if _text(step))
+        if operation != "CLEAR" and not value:
+            field_event("blocked", "empty_value", field, operation)
+            continue
+        update_id = str(item.get("update_id") or "").strip() or _act_identity(
+            "MODIFY_STAGE_FIELD",
+            field,
+            operation,
+            value,
+        )
+        current_value = _text(state.get(field))
+        canonical_fields = emvr.get("field_state", {})
+        if (session.interaction_state is InteractionState.EMVR_DIRECT
+                and field in BUILDER_REQUIREMENT_FIELDS
+                and isinstance(canonical_fields, dict) and field in canonical_fields):
+            current_value = _text(canonical_fields[field])
+        if update_id in known_ids:
+            already_matches_current_state = (
+                operation == "CLEAR" and field in explicitly_cleared
+            ) or (
+                operation != "CLEAR"
+                and field not in explicitly_cleared
+                and field not in emvr_explicitly_cleared
+                and (
+                    current_value == value
+                    or (
+                        operation == "MERGE"
+                        and field != "numerical_model_specifications"
+                        and value.replace(" ", "") in current_value.replace(" ", "")
+                    )
+                )
+            )
+            if already_matches_current_state:
+                field_event("success", "already_saved", field, operation, changed=False)
+                continue
+        previous = "" if field in emvr_explicitly_cleared else current_value
+        was_explicitly_cleared = field in explicitly_cleared
+        was_emvr_explicitly_cleared = field in emvr_explicitly_cleared
+        signature = str(item.get("semantic_key") or "").strip().casefold()
+        if not signature:
+            signature = "".join(value.split()).casefold()
+        known_signatures = semantic_signatures.get(field, [])
+        known_signatures = (
+            [str(item) for item in known_signatures]
+            if isinstance(known_signatures, list)
+            else []
+        )
+        if current_value != _text(state.get(field)):
+            known_signatures = []
+        if operation == "CLEAR":
+            next_value = ""
+            explicitly_cleared.add(field)
+        elif operation == "REPLACE" or not previous:
+            next_value = value
+            explicitly_cleared.discard(field)
+            emvr_explicitly_cleared.discard(field)
+        elif field == "numerical_model_specifications" and session.interaction_state is InteractionState.EMVR_DIRECT:
+            from .numerical_updates import merge_numerical_contract
+            next_value = merge_numerical_contract(previous, value)
+            explicitly_cleared.discard(field)
+            emvr_explicitly_cleared.discard(field)
+        elif signature and signature in known_signatures:
+            next_value = previous
+            explicitly_cleared.discard(field)
+            emvr_explicitly_cleared.discard(field)
+        elif not value or value.replace(" ", "") in previous.replace(" ", ""):
+            next_value = previous
+            explicitly_cleared.discard(field)
+            emvr_explicitly_cleared.discard(field)
+        else:
+            next_value = f"{previous}；补充：{value}"
+            explicitly_cleared.discard(field)
+            emvr_explicitly_cleared.discard(field)
+        field_event("success", "applied_to_memory", field, operation, changed=next_value != previous)
+        known_ids.add(update_id)
+        applied_ids.append(update_id)
+        clear_marker_changed = was_explicitly_cleared != (
+            field in explicitly_cleared
+        )
+        emvr_clear_marker_changed = was_emvr_explicitly_cleared != (
+            field in emvr_explicitly_cleared
+        )
+        if next_value != previous or clear_marker_changed or emvr_clear_marker_changed:
+            state[field] = next_value
+            changed.append(field)
+            records = field_provenance.get(field, [])
+            records = records if isinstance(records, list) else []
+            records.append(
+                {
+                    "revision": int(state.get("revision") or 0) + 1,
+                    "source": str(item.get("provenance") or provenance)[:80],
+                    "operation": operation,
+                    "value": next_value[:1000],
+                    "stage": stage.value,
+                }
+            )
+            field_provenance[field] = records[-30:]
+        if operation == "CLEAR":
+            semantic_signatures[field] = []
+        elif operation == "REPLACE":
+            semantic_signatures[field] = [signature] if signature else []
+        elif signature and signature not in known_signatures:
+            known_signatures.append(signature)
+            semantic_signatures[field] = known_signatures[-40:]
+    if changed:
+        state["revision"] = int(state.get("revision") or 0) + 1
+        state["last_updated_stage"] = stage.value
+    state["applied_update_ids"] = applied_ids[-240:]
+    state["semantic_signatures"] = semantic_signatures
+    state["explicitly_cleared_fields"] = sorted(explicitly_cleared)
+    if emvr:
+        emvr["explicitly_cleared_fields"] = sorted(emvr_explicitly_cleared)
+    if session.interaction_state is InteractionState.EMVR_DIRECT and changed:
+        aliases = {'interactions': 'required_behaviors', 'visualization_plan': 'visualization_requirements'}
+        alias_updates = [
+            {'field_id': aliases[field], 'operation': 'CLEAR' if field in explicitly_cleared else 'REPLACE',
+             'value': [state[field]] if state.get(field) else []}
+            for field in changed if field in aliases
+        ]
+        if alias_updates and mirror_aliases:
+            apply_emvr_field_updates(session.design_context.setdefault('emvr_design', {}), {'field_updates': alias_updates})
+        # Both write paths can revise Builder fields. Mirror a newer stage
+        # write into the canonical store so report, validation and Builder
+        # cannot disagree based on which storage path received the edit.
+        shared = [field for field in changed if (field in BUILDER_REQUIREMENT_FIELDS or field == "procedure_steps") and field in EMVR_EDITABLE_FIELDS]
+        if shared:
+            if not isinstance(session.design_context.get("emvr_design"), dict):
+                session.design_context["emvr_design"] = {}
+            apply_emvr_field_updates(session.design_context["emvr_design"], {"field_updates": [
+                {"field_id": field, "operation": "CLEAR" if field in explicitly_cleared else "REPLACE",
+                 "value": (state.get(field, "").splitlines() if field == "procedure_steps" else state.get(field, ""))}
+                for field in shared
+            ]})
+    return list(dict.fromkeys(changed))
+
+
+def stage_design_state_snapshot(session: DesignSession) -> dict[str, str]:
+    state = session.design_context.get("stage_design_state", {})
+    if not isinstance(state, dict):
+        return {field: "" for field in STAGE_ACT_FIELD_ORDER}
+    return {field: _text(state.get(field)) for field in STAGE_ACT_FIELD_ORDER}
+
+
+def reconcile_stage_clear_markers(
+    session: DesignSession,
+    updates: Any,
+) -> None:
+    """Let a later canonical EMVR write supersede an older stage-field clear."""
+
+    if not isinstance(updates, list):
+        return
+    state = session.design_context.get("stage_design_state", {})
+    if not isinstance(state, dict):
+        return
+    cleared = state.get("explicitly_cleared_fields", [])
+    if not isinstance(cleared, list):
+        return
+    cleared_fields = {str(item) for item in cleared if str(item)}
+    emvr = session.design_context.get("emvr_design", {})
+    emvr_cleared = set(emvr.get("explicitly_cleared_fields", []) or []) if isinstance(emvr, dict) else set()
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field_id") or item.get("field") or "")
+        operation = str(item.get("operation") or "").upper()
+        if (
+            operation in {"REPLACE", "MERGE"}
+            and item.get("value") not in (None, "", [], {})
+        ):
+            cleared_fields.discard(field)
+            emvr_cleared.discard(field)
+    state["explicitly_cleared_fields"] = sorted(cleared_fields)
+    if isinstance(emvr, dict) and "explicitly_cleared_fields" in emvr:
+        emvr["explicitly_cleared_fields"] = sorted(emvr_cleared)

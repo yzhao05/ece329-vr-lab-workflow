@@ -1,0 +1,230 @@
+from copy import deepcopy
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from ece329_workflow.api import WorkflowAPI
+from ece329_workflow.localization import DisplayTranslator
+from ece329_workflow.models import InteractionState, SessionConflict
+from ece329_workflow.openai_generator import ModelOutputError, OpenAIStageGenerator
+from tests.test_deepseek_provider import mixed_engine
+from tests.test_model_selection import make_engine, add_session, QUESTION
+from tests.test_security_and_store import call_api
+
+
+def test_adjacent_chinese_does_not_become_part_of_protected_identifiers():
+    from ece329_workflow.localization import validate_translation_references
+    validate_translation_references('恢复OBJ_01后完成S2，参见https://example.org/help。',
+                                    'Restore OBJ_01, then complete S2; see https://example.org/help.')
+
+
+@pytest.mark.parametrize('path', ['Assets/Field.cs', 'UnityProject/Assets/Field.cs', r'Packages\com.emvr\Field.cs'])
+def test_adjacent_chinese_paths_remain_protected(path):
+    from ece329_workflow.localization import protect_translation_text, restore_translation_text, validate_translation_references
+    source = '请打开' + path + '并核对。'
+    masked, literals = protect_translation_text(source)
+    assert path not in masked and path in literals.values()
+    assert restore_translation_text(masked, literals) == source
+    with pytest.raises(ValueError):
+        validate_translation_references(source, 'Open Assets/Other.cs and check.')
+
+
+def test_extra_translation_marker_is_rejected_and_source_marker_does_not_collide():
+    from ece329_workflow.localization import protect_translation_text, restore_translation_text
+    source = '__ECE329_KEEP_0__ 12'
+    masked, literals = protect_translation_text(source)
+    assert restore_translation_text(masked, literals) == source
+    with pytest.raises(ValueError):
+        restore_translation_text(masked + ' __ECE329_KEEP_999__', literals)
+
+
+def test_english_analysis_must_actually_translate_when_chinese_is_requested():
+    calls = []
+    def create(payload):
+        calls.append(payload)
+        rows = json.loads(payload['input'][0]['content'])
+        return {'output_text':json.dumps({'translations':rows})}
+    service = DisplayTranslator(OpenAIStageGenerator(transport=SimpleNamespace(create=create)))
+    with pytest.raises(ModelOutputError) as caught:
+        service.translate(['Ask for missing information.'], 'zh')
+    assert caught.value.translation_reason == 'untranslated_text'
+    assert len(calls) == 1
+    # Identifiers and scientific notation alone need no prose translation.
+    assert service.translate(['OBJ_01', r'\(E = q/r^2\)'], 'zh') == ['OBJ_01', r'\(E = q/r^2\)']
+
+
+@pytest.mark.parametrize('mode', list(InteractionState))
+def test_translation_restores_literals_without_asking_model_to_rewrite_them(mode):
+    import re
+    engine, _, chat = mixed_engine()
+    session = add_session(engine, mode)
+    source = r'对象OBJ_01位于S2；电流-2.50 A，公式\(E=q/(4*pi*r^2)\)，路径Assets/Scene1.unity。'
+    before = deepcopy(engine.store.get(session.design_id))
+    translated = DisplayTranslator(engine.generator).translate([source], 'en', 'deepseek-flash')[0]
+    sent = json.loads(chat.requests[0]['messages'][-1]['content'])[0]['text']
+    assert '__ECE329_KEEP_' in sent and 'OBJ_01' not in sent and 'Assets/Scene1.unity' not in sent
+    for literal in ['OBJ_01','S2','-2.50',r'\(E=q/(4*pi*r^2)\)','Assets/Scene1.unity']:
+        assert literal in translated
+    assert not re.search(r'[\u3400-\u9fff]', translated)
+    assert engine.store.get(session.design_id) == before
+
+
+@pytest.mark.parametrize('change', ['drop','duplicate'])
+def test_damaged_literal_markers_fail_without_model_retry(change):
+    calls = []
+    def create(payload):
+        calls.append(payload)
+        masked = json.loads(payload['input'][0]['content'])[0]['text']
+        text = '' if change == 'drop' else masked + masked
+        return {'output_text':json.dumps({'translations':[{'id':0,'text':'Object '+text}]})}
+    service = DisplayTranslator(OpenAIStageGenerator(transport=SimpleNamespace(create=create)))
+    with pytest.raises(ModelOutputError) as caught:
+        service.translate(['OBJ_01'], 'en')
+    assert caught.value.translation_reason == 'changed_reference'
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('mode', list(InteractionState))
+def test_language_reaches_generation_persists_and_is_part_of_idempotency(mode):
+    engine, transport = make_engine()
+    session = add_session(engine, mode)
+    turn = {'message': QUESTION, 'language': 'en', 'turn_id': 'english-turn-001'}
+    result = engine.process_turn(session.design_id, turn)
+    assert result['language'] == 'en'
+    assert engine.store.get(session.design_id).model_context['response_language'] == 'en'
+    generated = [p for p in transport.requests if p['text']['format']['name'] == 'ece329_stage_output']
+    assert generated and all('The user selected English' in p['instructions'] for p in generated)
+    count = len(transport.requests)
+    assert engine.process_turn(session.design_id, turn) == result
+    assert len(transport.requests) == count
+    with pytest.raises(SessionConflict):
+        engine.process_turn(session.design_id, {**turn, 'language': 'zh'})
+    engine.process_turn(session.design_id, {'message':QUESTION, 'language':'zh'})
+    assert engine.store.get(session.design_id).model_context['response_language'] == 'zh'
+
+
+@pytest.mark.parametrize('mode', list(InteractionState))
+@pytest.mark.parametrize('model', ['deepseek-flash', 'deepseek-flash:fast', 'deepseek-flash:reasoning', 'deepseek-v4-pro'])
+def test_display_translation_is_authorized_cached_and_never_advances_design(mode, model):
+    engine, _, chat = mixed_engine()
+    session = add_session(engine, mode)
+    api = WorkflowAPI(engine)
+    before = engine.store.get(session.design_id)
+    body = {'texts':['模型设置', '恢复 OBJ_01 后完成 S2'], 'language':'en',
+            'design_id':session.design_id, 'model':model}
+    assert call_api(api,'POST','/v1/localization',body)[0].startswith('401')
+    headers = {'Authorization':'Bearer model-owner'}
+    status, _, result = call_api(api,'POST','/v1/localization',body,request_headers=headers)
+    assert status.startswith('200'), result
+    assert result['translations'][0] == 'Model settings'
+    assert 'OBJ_01' in result['translations'][1] and 'S2' in result['translations'][1]
+    assert len(chat.requests) == 1 and chat.requests[0]['thinking']['type'] == 'disabled'
+    assert 'reasoning_effort' not in chat.requests[0]
+    assert call_api(api,'POST','/v1/localization',body,request_headers=headers)[2] == result
+    assert len(chat.requests) == 1
+    assert engine.store.get(session.design_id) == before
+    assert not engine.telemetry_records(session.design_id)  # Translation is not a design turn.
+
+
+@pytest.mark.parametrize('response,reason', [
+    (None, 'invalid_structure'),
+    ({'incomplete_details':'private'}, 'invalid_structure'),
+    ({'output':None}, 'invalid_structure'),
+    ({'output':[{'content':None}]}, 'invalid_structure'),
+    ({'output_text':42}, 'invalid_structure'),
+    ({'status':'incomplete','output_text':json.dumps({'translations':[{'id':0,'text':'Object OBJ_01'}]})}, 'invalid_structure'),
+    ({'output_text': '{'}, 'invalid_structure'),
+    ({'output_text': ''}, 'invalid_structure'),
+    ({'output_text': '{', 'incomplete_details': {'reason':'max_output_tokens'}}, 'output_truncated'),
+    ({'output_text': json.dumps({'translations':[{'id':0,'text':'中文 OBJ_01'}]})}, 'untranslated_text'),
+    ({'output_text': json.dumps({'translations':[{'id':0,'text':'Missing object'}]}), 'incomplete_details':None}, 'changed_reference'),
+])
+def test_translation_diagnostics_are_safe_and_do_not_retry(response, reason):
+    calls = []
+    def create(payload):
+        calls.append(payload)
+        return response
+    service = DisplayTranslator(OpenAIStageGenerator(transport=SimpleNamespace(create=create)))
+    with pytest.raises(ModelOutputError) as caught:
+        service.translate(['对象 OBJ_01'], 'en')
+    assert caught.value.translation_reason == reason
+    status, payload = WorkflowAPI._model_error_response(caught.value, 'test-correlation')
+    assert status == 502 and payload['translation_reason'] == reason
+    assert 'OBJ_01' not in json.dumps(payload)
+    assert len(calls) == 1
+
+
+def test_deepseek_truncation_has_specific_diagnostic():
+    from ece329_workflow.provider_transport import SchemaCheckedResponse
+    response = SchemaCheckedResponse('{', {}, 'length', {})
+    service = DisplayTranslator(OpenAIStageGenerator(transport=SimpleNamespace(create=lambda _: response)))
+    with pytest.raises(ModelOutputError) as caught:
+        service.translate(['对象'], 'en')
+    assert caught.value.translation_reason == 'output_truncated'
+
+
+@pytest.mark.parametrize('language', ['fr', '', 1, {}, []])
+def test_invalid_language_does_not_mutate_session(language):
+    engine, transport = make_engine()
+    session = add_session(engine)
+    before = engine.store.get(session.design_id)
+    with pytest.raises(ValueError):
+        engine.process_turn(session.design_id, {'message':QUESTION, 'language':language})
+    assert engine.store.get(session.design_id) == before
+    assert not transport.requests
+
+
+@pytest.mark.parametrize('rows', [[], [{'id':0,'text':'仍是中文'}], [{'id':True,'text':'text'}],
+    [{'id':0,'text':'Missing identifier'}], [{'id':0,'text':'OBJ_01'},{'id':0,'text':'OBJ_01'}]])
+def test_invalid_translation_fails_once_without_repair_loop(rows):
+    calls = []
+    def create(payload):
+        calls.append(deepcopy(payload))
+        return {'output_text':json.dumps({'translations':rows})}
+    service = DisplayTranslator(OpenAIStageGenerator(transport=SimpleNamespace(create=create)))
+    with pytest.raises(ModelOutputError):
+        service.translate(['对象 OBJ_01'], 'en')
+    assert len(calls) == 1
+
+
+def test_translation_limits_and_model_allowlist_are_enforced_before_calls():
+    engine, transport = make_engine()
+    service = DisplayTranslator(engine.generator)
+    for texts in ([], ['x']*25, ['x'*8001], ['x'*7000]*2):
+        with pytest.raises(ValueError):
+            service.translate(texts,'en')
+    with pytest.raises(ValueError):
+        service.translate(['hello'],'en','not-allowed')
+    assert not transport.requests
+
+
+def test_translation_chunks_keep_builder_paths_and_equations_whole():
+    from ece329_workflow.localization import split_display_text
+    path='UnityProject/LocalPackages/com.emvr.lab-common/Runtime/SceneFlow/EmVrLabContractRunner.cs'
+    source='说明'*1995+path+'；公式 E=q/(4*pi*epsilon*r^2)；'+'说明'*2100
+    parts=list(split_display_text(source))
+    assert ''.join(parts)==source
+    assert any(path in part for part in parts)
+    assert all(len(part)<=4000 for part in parts)
+
+
+def test_english_exports_translate_all_visible_text_without_mutating_source():
+    from io import BytesIO
+    import re
+    import pdfplumber
+    from ece329_workflow.localization import english_pdf
+    from tools.export_emvr37_review import reviewed_engine
+    from tests.test_model_selection import ModelTransport
+    engine, session = reviewed_engine()
+    before = engine.store.get(session.design_id)
+    translator = DisplayTranslator(OpenAIStageGenerator(transport=ModelTransport()))
+    for builder in (False, True):
+        data = english_pdf(engine, translator, session.design_id, builder)
+        with pdfplumber.open(BytesIO(data)) as pdf:
+            text = '\n'.join(page.extract_text() or '' for page in pdf.pages)
+        assert not re.search(r'[\u3400-\u9fff]', text)
+        assert session.design_id in text
+        if builder:
+            assert 'EMVR_Blind_BuilderPack' in text and 'InitializeOnce' in text
+    assert engine.store.get(session.design_id) == before

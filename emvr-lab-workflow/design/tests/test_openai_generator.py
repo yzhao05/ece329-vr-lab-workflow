@@ -1,0 +1,4386 @@
+from __future__ import annotations
+
+import json
+import unittest
+from copy import deepcopy
+from typing import Any
+
+from ece329_workflow.engine import WorkflowEngine
+from ece329_workflow.dialogue_state import serialize_intent_input
+from ece329_workflow.generator import RuleBasedStageGenerator, build_exploration_scenes
+from ece329_workflow.guardrails import build_stage_one_turn_context
+from ece329_workflow.knowledge_base import KNOWLEDGE
+from ece329_workflow.emvr_formula_flow import handle_emvr_formula_turn
+from ece329_workflow.models import DesignSession, InteractionState, Stage
+from ece329_workflow.store import InMemorySessionStore
+from ece329_workflow.openai_generator import (
+    FallbackStageGenerator,
+    ModelConfigurationError,
+    ModelOutputError,
+    ModelHTTPError,
+    ModelServiceError,
+    OpenAIStageGenerator,
+    _source_backed_unresolved_acts,
+    _uncovered_dialogue_text,
+    generator_from_environment,
+)
+from ece329_workflow.prompts import build_prompt_packet
+
+
+class FakeTransport:
+    def __init__(
+        self,
+        output: dict[str, Any] | None = None,
+        error: Exception | None = None,
+        response_id: str = "resp_test",
+        errors: list[Exception] | None = None,
+        outputs: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.output = output
+        self.outputs = list(outputs or [])
+        self.error = error
+        self.response_id = response_id
+        self.errors = list(errors or [])
+        self.requests: list[dict[str, Any]] = []
+
+    def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append(deepcopy(payload))
+        if self.errors:
+            raise self.errors.pop(0)
+        if self.error:
+            raise self.error
+        selected_output = self.outputs.pop(0) if self.outputs else self.output
+        return {
+            "id": self.response_id,
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps(selected_output, ensure_ascii=False),
+                        }
+                    ],
+                }
+            ]
+        }
+
+
+def guided_session(stage_index: int = 0) -> DesignSession:
+    return DesignSession(
+        design_id="design_test",
+        interaction_state=InteractionState.GUIDED_DESIGN,
+        current_stage_index=stage_index,
+        design_context={"idea": {"original": "研究传输线驻波"}},
+    )
+
+
+def valid_output(**overrides: Any) -> dict[str, Any]:
+    brainstorm = KNOWLEDGE.brainstorm_options(
+        "研究传输线驻波",
+        limit=3,
+        seed_key="design_test:0",
+    )
+    scenes = build_exploration_scenes(brainstorm)
+    output: dict[str, Any] = {
+        "assistant_message": (
+            "我们先用一幅可改造、可组合的物理图景比较ECE329课上所学概念"
+            "之间的关系。启发性延伸只用于打开思路。"
+        ),
+        "stage_payload_json": json.dumps(
+            {
+                "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                "input_category": "COURSE_CONTENT",
+                "alternative_ideas": brainstorm,
+                "exploration_scenes": scenes,
+            },
+            ensure_ascii=False,
+        ),
+        "student_task": "你更想探索哪一种变化关系？",
+        "visualization_json": None,
+        "assumptions": [],
+        "warnings": [],
+    }
+    output.update(overrides)
+    return output
+
+
+def retrieved_brainstorm_options(
+    message: str,
+    session: DesignSession | None = None,
+) -> list[dict[str, Any]]:
+    packet = build_prompt_packet(session or guided_session(), message)
+    return packet["context"]["knowledge_retrieval"]["brainstorm_options"]
+
+
+class OpenAIStageGeneratorTests(unittest.TestCase):
+    def test_uncovered_text_uses_exact_source_when_offsets_are_shifted(self) -> None:
+        message = (
+            "方法1负责正向展示场线变化；"
+            "另外请把比较条件设为同种电荷和异种电荷。"
+        )
+        handled = "方法1负责正向展示场线变化"
+        acts = [
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "required_behaviors",
+                "operation": "REPLACE",
+                "content": [handled],
+                "source_text": handled,
+                # Simulate a model span shifted by two characters. The exact
+                # source text must win over these stale offsets.
+                "source_start": 2,
+                "source_end": 2 + len(handled),
+                "confidence": 0.98,
+            }
+        ]
+
+        uncovered = _uncovered_dialogue_text(message, acts)
+
+        self.assertNotIn("向展示场线变化", uncovered)
+        self.assertIn("比较条件设为同种电荷和异种电荷", uncovered)
+
+    def test_shifted_duplicate_source_uses_the_nearest_occurrence(self) -> None:
+        repeated = "记录空间中的场线形态"
+        message = (
+            f"这是第一次完整{repeated}；改变距离后再次{repeated}；"
+            "另外还要补充比较同种电荷与异种电荷的明显差异。"
+        )
+        second_start = message.rfind(repeated)
+        acts = [
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "observed_quantities",
+                "operation": "REPLACE",
+                "content": [repeated],
+                "source_text": repeated,
+                "source_start": second_start + 1,
+                "source_end": second_start + 1 + len(repeated),
+                "confidence": 0.98,
+            }
+        ]
+
+        uncovered = _uncovered_dialogue_text(message, acts)
+
+        self.assertTrue(uncovered.startswith(f"这是第一次完整{repeated}"))
+        self.assertIn("补充比较同种电荷与异种电荷", uncovered)
+
+    def test_emvr_formula_topic_uses_phase_specific_semantic_recovery(self) -> None:
+        message = "我想做一个静电场实验"
+        topic_analysis = {
+            "course_domain": "electrostatics",
+            "topic_description": "静电场实验",
+            "mentioned_objects": [],
+            "changed_quantities": [],
+            "observed_quantities": [],
+            "explicit_formula_ids": [],
+            "specificity": "BROAD",
+            "profile_evidence": [],
+            "confidence": 0.98,
+        }
+
+        class PhaseAwareTransport:
+            def __init__(self) -> None:
+                self.requests: list[dict[str, Any]] = []
+
+            def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+                self.requests.append(deepcopy(payload))
+                schema_name = payload["text"]["format"]["name"]
+                if schema_name == "ece329_emvr_formula_phase_recovery":
+                    output = {
+                        "actions": [
+                            {
+                                "type": "SET_EMVR_TOPIC",
+                                "target": "emvr_formula_topic",
+                                "operation": "EXECUTE",
+                                "content": json.dumps(
+                                    topic_analysis,
+                                    ensure_ascii=False,
+                                ),
+                                "source_text": message,
+                                "source_start": 0,
+                                "source_end": len(message),
+                                "semantic_key": "broad_electrostatics_topic",
+                                "confidence": 0.98,
+                            }
+                        ]
+                    }
+                elif schema_name in {
+                    "ece329_compact_dialogue_acts",
+                    "ece329_guided_design_turn_recovery",
+                }:
+                    output = {"actions": []}
+                else:
+                    output = {
+                        "intent": "UNCLEAR",
+                        "target": "emvr_formula_topic",
+                        "resolved_value_json": None,
+                        "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+                        "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+                        "advance_requested": False,
+                        "preserve_current_design": True,
+                        "confidence": 0.76,
+                    }
+                return {
+                    "id": f"resp_{len(self.requests)}",
+                    "output_text": json.dumps(output, ensure_ascii=False),
+                }
+
+        transport = PhaseAwareTransport()
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            {
+                "type": "ANSWER_EMVR_FORMULA_TOPIC",
+                "subject": "emvr_formula_topic",
+                "question": "你想研究哪个ECE329主题，或想验证哪条公式？",
+            },
+            {
+                "emvr_formula_flow": {"phase": "TOPIC_RECEIVED"},
+                "formula_design_profiles": KNOWLEDGE.formula_design_profiles,
+            },
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["emvr_formula_actions"][0]["type"],
+            "SET_EMVR_TOPIC",
+        )
+        self.assertIn(
+            "ece329_emvr_formula_phase_recovery",
+            [request["text"]["format"]["name"] for request in transport.requests],
+        )
+
+    def test_emvr_formula_topic_recovers_from_generic_new_topic_content(self) -> None:
+        message = "我想做一个静电场实验"
+        topic_analysis = {
+            "course_domain": "electrostatics",
+            "topic_description": "静电场实验",
+            "mentioned_objects": [],
+            "changed_quantities": [],
+            "observed_quantities": [],
+            "explicit_formula_ids": [],
+            "specificity": "BROAD",
+            "profile_evidence": [],
+            "confidence": 0.98,
+        }
+
+        class GenericTopicTransport:
+            def __init__(self) -> None:
+                self.requests: list[dict[str, Any]] = []
+
+            def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+                self.requests.append(deepcopy(payload))
+                schema_name = payload["text"]["format"]["name"]
+                if schema_name == "ece329_emvr_formula_phase_recovery":
+                    output = {
+                        "actions": [
+                            {
+                                "type": "SET_EMVR_TOPIC",
+                                "target": "emvr_formula_topic",
+                                "operation": "EXECUTE",
+                                "content": json.dumps(topic_analysis, ensure_ascii=False),
+                                "source_text": message,
+                                "source_start": 0,
+                                "source_end": len(message),
+                                "semantic_key": "broad_electrostatics_topic",
+                                "confidence": 0.98,
+                            }
+                        ]
+                    }
+                else:
+                    generic_act = {
+                        "type": "NEW_TOPIC_CONTENT",
+                        "target": "new_topic",
+                        "operation": "EXECUTE",
+                        "content": message,
+                        "source_text": message,
+                        "source_start": 0,
+                        "source_end": len(message),
+                        "semantic_key": "new_electrostatics_topic",
+                        "confidence": 0.96,
+                    }
+                    output = {
+                        "intent": "NEW_TOPIC",
+                        "target": "new_topic",
+                        "resolved_value_json": json.dumps(message, ensure_ascii=False),
+                        "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+                        "dialogue_acts_json": json.dumps([generic_act], ensure_ascii=False),
+                        "advance_requested": False,
+                        "preserve_current_design": True,
+                        "confidence": 0.96,
+                    }
+                return {
+                    "id": f"resp_{len(self.requests)}",
+                    "output_text": json.dumps(output, ensure_ascii=False),
+                }
+
+        transport = GenericTopicTransport()
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            {
+                "type": "ANSWER_EMVR_FORMULA_TOPIC",
+                "subject": "emvr_formula_topic",
+                "question": "你想研究哪个ECE329主题，或想验证哪条公式？",
+            },
+            {
+                "emvr_formula_flow": {"phase": "TOPIC_RECEIVED"},
+                "formula_design_profiles": KNOWLEDGE.formula_design_profiles,
+            },
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["emvr_formula_actions"][0]["type"],
+            "SET_EMVR_TOPIC",
+        )
+        self.assertNotIn(
+            "NEW_TOPIC_CONTENT",
+            [act["type"] for act in result["dialogue_acts"]],
+        )
+        self.assertIn(
+            "ece329_emvr_formula_phase_recovery",
+            [request["text"]["format"]["name"] for request in transport.requests],
+        )
+        output, completed = handle_emvr_formula_turn(session, message, result)
+        self.assertFalse(completed)
+        self.assertEqual(
+            output.stage_payload["emvr_formula_phase"],
+            "FORMULA_CANDIDATES_PRESENTED",
+        )
+        self.assertTrue(output.stage_payload["formula_cards"])
+
+    def test_emvr_broad_course_topic_survives_focused_semantic_outage(self) -> None:
+        message = "我想做一个静电场实验"
+
+        class RecoveryOutageTransport:
+            def __init__(self) -> None:
+                self.requests: list[dict[str, Any]] = []
+
+            def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+                self.requests.append(deepcopy(payload))
+                schema_name = payload["text"]["format"]["name"]
+                if schema_name == "ece329_emvr_formula_phase_recovery":
+                    raise ModelServiceError("focused semantic service unavailable")
+                generic_act = {
+                    "type": "NEW_TOPIC_CONTENT",
+                    "target": "new_topic",
+                    "operation": "EXECUTE",
+                    "content": message,
+                    "source_text": message,
+                    "source_start": 0,
+                    "source_end": len(message),
+                    "semantic_key": "broad_electrostatics_topic",
+                    "confidence": 0.95,
+                }
+                output = {
+                    "intent": "NEW_TOPIC",
+                    "target": "new_topic",
+                    "resolved_value_json": json.dumps(message, ensure_ascii=False),
+                    "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+                    "dialogue_acts_json": json.dumps([generic_act], ensure_ascii=False),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.95,
+                }
+                return {
+                    "id": f"resp_{len(self.requests)}",
+                    "output_text": json.dumps(output, ensure_ascii=False),
+                }
+
+        transport = RecoveryOutageTransport()
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            {
+                "type": "ANSWER_EMVR_FORMULA_TOPIC",
+                "subject": "emvr_formula_topic",
+                "question": "你想研究哪个ECE329主题，或想验证哪条公式？",
+            },
+            {
+                "emvr_formula_flow": {"phase": "TOPIC_RECEIVED"},
+                "formula_design_profiles": KNOWLEDGE.formula_design_profiles,
+            },
+        )
+
+        formula_actions = result["semantic_updates"]["emvr_formula_actions"]
+        self.assertEqual(formula_actions[0]["type"], "SET_EMVR_TOPIC")
+        self.assertEqual(
+            formula_actions[0]["content"]["course_domain"],
+            "electrostatics",
+        )
+        output, completed = handle_emvr_formula_turn(session, message, result)
+        self.assertFalse(completed)
+        self.assertEqual(
+            output.stage_payload["emvr_formula_phase"],
+            "FORMULA_CANDIDATES_PRESENTED",
+        )
+        self.assertTrue(output.stage_payload["formula_cards"])
+
+    def test_pending_comparison_is_semantically_committed_with_a_facet_answer(self) -> None:
+        transport = FakeTransport(
+            {
+                "decisions": [
+                    {
+                        "comparison_id": "polarity_cases",
+                        "decision": "ACCEPT",
+                        "cases": [],
+                        "confidence": 0.97,
+                    }
+                ]
+            }
+        )
+        generator = OpenAIStageGenerator(transport=transport)
+        acts = generator._recover_pending_comparison_decisions(
+            json.dumps(
+                {
+                    "user_message": "比较同种和异种电荷靠近时场线的差异",
+                    "previous_question": "你想比较什么条件？",
+                },
+                ensure_ascii=False,
+            ),
+            "比较同种和异种电荷靠近时场线的差异",
+            [
+                {
+                    "comparison_id": "polarity_cases",
+                    "title": "电荷极性关系",
+                    "recommended_cases": ["同种电荷", "异种电荷"],
+                    "adoption_status": "PENDING",
+                }
+            ],
+        )
+
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["type"], "MODIFY_COMPARISON")
+        self.assertEqual(acts[0]["content"]["cases"], ["同种电荷", "异种电荷"])
+
+    def test_comparison_recovery_can_create_cases_already_confirmed_in_structure(self) -> None:
+        transport = FakeTransport(
+            {
+                "decisions": [
+                    {
+                        "comparison_id": "",
+                        "decision": "CREATE",
+                        "title": "闭合曲面与场源的位置关系",
+                        "cases": [
+                            "曲面完全包住场源",
+                            "曲面部分包住场源",
+                            "曲面未包住场源",
+                        ],
+                        "confidence": 0.97,
+                    }
+                ]
+            }
+        )
+        generator = OpenAIStageGenerator(transport=transport)
+
+        acts = generator._recover_pending_comparison_decisions(
+            json.dumps(
+                {
+                    "user_message": "请把我在实验结构里说过的参照情形恢复为基础比较",
+                    "design_state": {
+                        "conceptual_structure": (
+                            "参照情形包括曲面完全包住场源、"
+                            "曲面部分包住场源、曲面未包住场源"
+                        )
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            "请把我在实验结构里说过的参照情形恢复为基础比较",
+            [],
+        )
+
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["content"]["action"], "CREATE")
+        self.assertEqual(len(acts[0]["content"]["new_cases"]), 3)
+
+    def test_missing_semantic_domain_uses_ranked_course_catalog_domain(self) -> None:
+        context = build_stage_one_turn_context(
+            "我想做一个静电场实验",
+            options=[],
+            idea_context={},
+            semantic_updates={"course_scope_status": "COURSE_CONTENT"},
+        )
+        options = KNOWLEDGE.brainstorm_options(
+            "我想做一个静电场实验",
+            limit=3,
+            seed_key="trail38-domain-fallback",
+            course_domain=context["course_domain"],
+        )
+
+        self.assertEqual(context["course_domain"], "electrostatics")
+        self.assertEqual(
+            {option["course_block"] for option in options},
+            {"electrostatics"},
+        )
+        self.assertEqual(
+            KNOWLEDGE.course_domain_for_text("电磁波在介质边界发生反射"),
+            "electromagnetics",
+        )
+
+    def test_broad_electrostatic_scenes_exclude_adjacent_force_law(self) -> None:
+        options = KNOWLEDGE.brainstorm_options(
+            "我想做一个静电场实验",
+            limit=20,
+            seed_key="static-domain-regression",
+            course_domain="electrostatics",
+        )
+        profile_ids = {
+            profile_id
+            for option in options
+            for profile_id in KNOWLEDGE._formula_profile_ids_by_scene_id.get(
+                str(option.get("catalog_scene_id") or ""),
+                [],
+            )
+        }
+
+        self.assertNotIn("FD01_VECTOR_LORENTZ", profile_ids)
+
+    def test_coverage_audit_ignores_only_short_discourse_wrapper(self) -> None:
+        message = "我想要的设计方向是：比较两个点电荷靠近时中间区域的电场线变化"
+        start = message.index("比较")
+        acts = [
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "experiment_brief",
+                "source_start": start,
+                "source_end": len(message),
+            }
+        ]
+
+        self.assertEqual(_uncovered_dialogue_text(message, acts), "")
+
+    def test_coverage_audit_preserves_a_missed_parallel_instruction(self) -> None:
+        first = "把完整实验方向改成比较两个点电荷由远到近时的场线变化"
+        second = "同时把观察量改成中间区域场线的弯曲和连接程度"
+        message = f"{first}；{second}"
+        acts = [
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "experiment_brief",
+                "source_start": 0,
+                "source_end": len(first),
+            }
+        ]
+
+        self.assertIn(second, _uncovered_dialogue_text(message, acts))
+
+    def test_coverage_audit_does_not_repeat_content_already_bound_to_field(self) -> None:
+        observation = (
+            "观察方式为场线和等势面的空间分布图，重点关注尖角处和窄缝处的"
+            "场线密度和等势面弯曲程度"
+        )
+        message = (
+            "对象包括形状可调的导体边界和外加静电场源。"
+            f"{observation}。"
+        )
+        acts = [
+            {
+                "type": "MODIFY_DESIGN_FIELD",
+                "target": "conceptual_structure",
+                "operation": "REPLACE",
+                "content": message,
+                # The model's source span is narrower than the content it
+                # successfully committed, which must not create a fake second
+                # question for the student.
+                "source_start": 0,
+                "source_end": message.index(observation),
+            }
+        ]
+
+        self.assertEqual(_uncovered_dialogue_text(message, acts), "")
+
+    def test_unresolved_paraphrase_cannot_be_shown_as_student_text(self) -> None:
+        message = "我对图景A感兴趣，主要比较导体和介质在同一外加场中的场线弯曲"
+        acts = [
+            {
+                "type": "UNRESOLVED",
+                "content": "感兴趣于导体和介质这一方向",
+                "source_text": "感兴趣于导体和介质这一方向",
+            },
+            {
+                "type": "MODIFY_DESIGN_FIELD",
+                "target": "research_object",
+                "content": "导体和介质在同一外加场中的场线",
+            },
+        ]
+
+        cleaned = _source_backed_unresolved_acts(message, acts)
+
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(cleaned[0]["type"], "MODIFY_DESIGN_FIELD")
+
+    def test_unresolved_exact_source_fragment_is_retained(self) -> None:
+        message = "保留研究对象；但显示方式我还没有确定"
+        fragment = "显示方式我还没有确定"
+        cleaned = _source_backed_unresolved_acts(
+            message,
+            [{"type": "UNRESOLVED", "content": fragment}],
+        )
+
+        self.assertEqual(cleaned[0]["content"], fragment)
+        self.assertEqual(message[cleaned[0]["source_start"]:cleaned[0]["source_end"]], fragment)
+
+    def test_focused_formula_reference_avoids_adjacent_mechanism_list(self) -> None:
+        formulas = KNOWLEDGE.focused_formula_references(
+            "导体和介质在同一外加静电场中的场线与边界响应",
+            limit=1,
+        )
+
+        self.assertEqual(len(formulas), 1)
+        self.assertNotIn(formulas[0].get("id"), {"ohm_law_density", "charge_relaxation"})
+
+    def test_prompt_packet_exposes_formula_design_profiles_as_known_knowledge(self) -> None:
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        packet = build_prompt_packet(
+            session,
+            "比较多个点电荷靠近时的电场线变化",
+        )
+        retrieval = json.loads(packet["serialized_context"])["knowledge_retrieval"]
+
+        self.assertTrue(retrieval["formula_design_profiles"])
+        profile = retrieval["formula_design_profiles"][0]
+        self.assertIn("primary_formulas", profile)
+        self.assertIn("supporting_formulas", profile)
+        self.assertIn("supported_variations", profile)
+        self.assertIn("supported_observations", profile)
+        self.assertIn("boundary_conditions", profile)
+
+    def test_guided_prompt_uses_selected_scene_formula_links_as_authority(self) -> None:
+        selected = next(
+            point
+            for point in KNOWLEDGE.exploration_points
+            if point.get("catalog_scene_id") == "ECE329-S004"
+        )
+        session = guided_session()
+        session.design_context["idea"] = {
+            "original": "研究两个带电物体靠近时的电场和电场线",
+            "topic_anchor": "静电场实验",
+            "current_focus": "两个点电荷靠近时的电场线变化",
+            "selected_scene_ids": ["ECE329-S004"],
+            "selected_course_relations": [selected],
+            "direction_locked": True,
+        }
+
+        packet = build_prompt_packet(
+            session,
+            "继续研究电场、电场线和中间区域的空间变化",
+        )
+        retrieval = json.loads(packet["serialized_context"])["knowledge_retrieval"]
+        formula_ids = {item["id"] for item in retrieval["formulas"]}
+        profile_ids = {
+            item["profile_id"] for item in retrieval["formula_design_profiles"]
+        }
+
+        self.assertTrue(retrieval["selected_scene_formula_links"])
+        self.assertEqual(profile_ids, {"FD02_COULOMB_SUPERPOSITION"})
+        self.assertIn("coulomb_point_charge", formula_ids)
+        self.assertIn("electric_field_superposition", formula_ids)
+        self.assertNotIn("lorentz_force", formula_ids)
+        self.assertEqual(
+            {item["concept_id"] for item in retrieval["concepts"]},
+            {selected["concept_id"]},
+        )
+
+    def test_single_scene_selection_keeps_its_catalog_scene_id(self) -> None:
+        selected = next(
+            point
+            for point in KNOWLEDGE.exploration_points
+            if point.get("catalog_scene_id") == "ECE329-S004"
+        )
+
+        context = build_stage_one_turn_context(
+            "我想沿这个图景继续研究两个电荷靠近时的场线变化",
+            options=[selected],
+            idea_context={},
+            selected_option_id=selected["option_id"],
+            semantic_updates={"course_scope_status": "COURSE_CONTENT"},
+        )
+
+        self.assertEqual(context["selected_scene_ids"], ["ECE329-S004"])
+        self.assertEqual(context["selected_course_relations"], [selected])
+
+    def test_unbound_guided_formula_candidates_come_from_design_profiles(self) -> None:
+        session = guided_session()
+        session.design_context["idea"] = {
+            "original": "我想观察静电场中的电场线变化"
+        }
+        packet = build_prompt_packet(session, "我想观察静电场中的电场线变化")
+        retrieval = json.loads(packet["serialized_context"])["knowledge_retrieval"]
+        allowed_formula_ids = {
+            formula["id"]
+            for profile in retrieval["formula_design_profiles"]
+            for key in ("primary_formulas", "supporting_formulas")
+            for formula in profile.get(key, [])
+        }
+
+        self.assertTrue(retrieval["formula_design_profiles"])
+        self.assertEqual(
+            {item["id"] for item in retrieval["formulas"]},
+            allowed_formula_ids,
+        )
+        self.assertNotIn(
+            "lorentz_force",
+            {item["id"] for item in retrieval["formulas"]},
+        )
+        self.assertNotIn(
+            "lecture_01",
+            {item["concept_id"] for item in retrieval["concepts"]},
+        )
+        self.assertEqual(retrieval["selected_scene_formula_links"], [])
+
+    def test_coverage_audit_ignores_separate_field_wrappers_in_compound_answer(self) -> None:
+        question = "两个带电物体靠近时，场线如何随距离和电荷类型变化"
+        changed = "距离和电荷类型"
+        observed = "场线的空间分布形态和重排特征"
+        message = (
+            f"我们之前的研究问题是：{question}；"
+            f"条件端是{changed}，响应端是{observed}"
+        )
+        acts = []
+        for target, value in (
+            ("research_question", question),
+            ("changed_quantities", changed),
+            ("observed_quantities", observed),
+        ):
+            start = message.index(value)
+            acts.append(
+                {
+                    "type": "MODIFY_EMVR_FIELD",
+                    "target": target,
+                    "source_start": start,
+                    "source_end": start + len(value),
+                }
+            )
+
+        self.assertEqual(_uncovered_dialogue_text(message, acts), "")
+
+    def test_prompt_defines_one_review_contract_for_both_mode_names(self) -> None:
+        guided_packet = build_prompt_packet(
+            guided_session(),
+            "继续完善这个实验想法",
+        )
+        emvr = guided_session()
+        emvr.interaction_state = InteractionState.EMVR_DIRECT
+        emvr_packet = build_prompt_packet(
+            emvr,
+            "继续完善这个Unity VR实验设计",
+        )
+
+        for packet in (guided_packet, emvr_packet):
+            self.assertIn("可修改的阶段草稿", packet["system"])
+            self.assertIn("用户参与讨论，核对、修订并确认方案", packet["system"])
+            self.assertIn("Builder 输入 PDF", packet["system"])
+
+    def test_student_facing_reply_rejects_internal_numbered_stage_reference(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                assistant_message="根据阶段1已经确定的内容，我们继续整理当前部分。"
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(),
+                "继续完善这个实验想法",
+            )
+
+    def test_student_facing_reply_rejects_state_machine_terminology(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                assistant_message="状态机已经提交design_state，请继续回答。"
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(),
+                "继续完善这个实验想法",
+            )
+
+    def test_context_intent_resolver_uses_a_separate_structured_request(self) -> None:
+        transport = FakeTransport(
+            {
+                "intent": "ADVANCE_STAGE",
+                "target": "variable_plan",
+                "resolved_value_json": None,
+                "semantic_updates_json": json.dumps(
+                    {
+                        "no_direction": False,
+                        "selected_option_ids": [],
+                        "facet_updates": [],
+                        "comparison_updates": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                "advance_requested": True,
+                "preserve_current_design": True,
+                "confidence": 0.97,
+            }
+        )
+        generator = OpenAIStageGenerator(transport=transport, model="test-model")
+        session = guided_session(stage_index=list(Stage).index(Stage.VARIABLES_AND_CONDITIONS))
+        pending = {
+            "type": "CONFIRM_OR_MODIFY",
+            "subject": "variable_plan",
+            "proposal": ["距离", "电场线形状"],
+            "question": "是否保留当前变量安排？",
+            "allowed_intents": ["ADVANCE_STAGE", "ACCEPT_PREVIOUS_PROPOSAL"],
+        }
+
+        result = generator.resolve_intent(
+            session,
+            "沿用刚才的安排，继续往下整理",
+            pending,
+            {"independent_variable": ["距离"]},
+        )
+
+        self.assertEqual(result["intent"], "ADVANCE_STAGE")
+        self.assertFalse(result["semantic_updates"]["no_direction"])
+        request = transport.requests[0]
+        self.assertEqual(request["text"]["format"]["name"], "ece329_context_intent")
+        self.assertEqual(request["reasoning"], {"effort": "medium"})
+        self.assertNotIn("max_output_tokens", request)
+        self.assertFalse(request["store"])
+        self.assertNotIn("previous_response_id", request)
+        serialized = request["input"][0]["content"][0]["text"]
+        self.assertIn("pending_action", serialized)
+        self.assertIn("沿用刚才的安排", serialized)
+        self.assertIn("no_direction表示学生当前没有可供继续完善的实验方向", request["instructions"])
+        self.assertIn("不得判成课外主题", request["instructions"])
+        self.assertIn("给出一个可能、参考、示例或你的判断", request["instructions"])
+        self.assertIn("只返回实质设计内容", request["instructions"])
+        self.assertIn("CONFIRM_STAGE_OR_MODIFY", request["instructions"])
+        self.assertIn("stage_one_direction_detail", request["instructions"])
+        self.assertIn("topic_change_explicit", request["instructions"])
+
+    def test_context_resolver_accepts_multiple_executable_dialogue_acts(self) -> None:
+        research = "比较同种与异种电荷靠近时的场线变化"
+        observation = "观察中间区域空白区和弯曲连接"
+        question = "为什么异种电荷的场线会弯曲相连？"
+        transport = FakeTransport(
+            output={
+                "intent": "UNCLEAR",
+                "target": None,
+                "resolved_value_json": None,
+                "semantic_updates_json": None,
+                "dialogue_acts_json": json.dumps(
+                    [
+                        {
+                            "type": "ANSWER_PENDING_QUESTION",
+                            "target": "research_question",
+                            "operation": "REPLACE",
+                            "content": research,
+                            "confidence": 0.99,
+                        },
+                        {
+                            "type": "MODIFY_STAGE_FIELD",
+                            "target": "observations",
+                            "operation": "MERGE",
+                            "content": [observation],
+                            "confidence": 0.98,
+                        },
+                        {
+                            "type": "ASK_COURSE_QUESTION",
+                            "target": "course_explanation",
+                            "operation": "MERGE",
+                            "content": question,
+                            "confidence": 0.98,
+                        },
+                    ],
+                    ensure_ascii=False,
+                ),
+                "advance_requested": False,
+                "preserve_current_design": True,
+                "confidence": 0.97,
+            }
+        )
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question"},
+            "question": "你准备比较什么条件，并观察什么现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            f"{research}，另外{observation}。{question}",
+            pending,
+            {"idea_development": {"active_facet_id": "research_question"}},
+        )
+
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(len(result["dialogue_acts"]), 3)
+        self.assertEqual(
+            result["semantic_updates"]["design_updates"][0]["field"],
+            "research_question",
+        )
+        self.assertEqual(
+            result["semantic_updates"]["stage_field_updates"][0]["field"],
+            "observations",
+        )
+        self.assertEqual(
+            result["semantic_updates"]["student_questions"],
+            [question],
+        )
+        schema = transport.requests[0]["text"]["format"]["schema"]
+        self.assertIn("dialogue_acts_json", schema["required"])
+        self.assertIn("同一句可以同时包含", transport.requests[0]["instructions"])
+
+    def test_valid_actions_survive_malformed_compatibility_summaries(self) -> None:
+        research = "比较同种与异种电荷靠近时，场线怎样随距离变化"
+        action = {
+            "type": "ANSWER_PENDING_QUESTION",
+            "target": "research_question",
+            "operation": "REPLACE",
+            "content": research,
+            "confidence": 0.98,
+        }
+        transport = FakeTransport(
+            output={
+                "intent": "ANSWER_CURRENT_QUESTION",
+                "target": "research_question",
+                "resolved_value_json": "{invalid compatibility value",
+                "semantic_updates_json": "{invalid compatibility updates",
+                "dialogue_acts_json": json.dumps([action], ensure_ascii=False),
+                "advance_requested": False,
+                "preserve_current_design": True,
+                "confidence": 0.98,
+            }
+        )
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question"},
+            "question": "你想比较什么条件，并观察什么现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            research,
+            pending,
+            {"idea_development": {"active_facet_id": "research_question"}},
+        )
+
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["design_updates"][0]["value"],
+            research,
+        )
+
+    def test_unparseable_intent_gets_one_action_focused_retry(self) -> None:
+        research = "比较距离变化时两个场源之间的场线重排"
+        valid = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": "research_question",
+            "resolved_value_json": json.dumps(research, ensure_ascii=False),
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "ANSWER_PENDING_QUESTION",
+                        "target": "research_question",
+                        "operation": "REPLACE",
+                        "content": research,
+                        "confidence": 0.99,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.99,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    **valid,
+                    "dialogue_acts_json": "[{broken",
+                },
+                valid,
+            ]
+        )
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question"},
+            "question": "你想比较什么条件，并观察什么现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+        generator = OpenAIStageGenerator(transport=transport)
+
+        result = generator.resolve_intent(
+            guided_session(),
+            research,
+            pending,
+            {"idea_development": {"active_facet_id": "research_question"}},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertNotIn("max_output_tokens", transport.requests[1])
+        self.assertIn(
+            "dialogue_acts_json是唯一可执行写入来源",
+            transport.requests[1]["input"][0]["content"][-1]["text"],
+        )
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(generator.runtime_info()["intent_repair_successes"], 1)
+
+    def test_twice_rejected_rich_intent_uses_compact_action_contract(self) -> None:
+        research = "比较距离变化时两个电荷之间的场线重排"
+        malformed = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": "research_question",
+            "resolved_value_json": json.dumps(research, ensure_ascii=False),
+            "semantic_updates_json": None,
+            "dialogue_acts_json": "[{broken",
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        compact = {
+            "actions": [
+                {
+                    "type": "ANSWER_PENDING_QUESTION",
+                    "target": "research_question",
+                    "operation": "REPLACE",
+                    "content": research,
+                    "semantic_key": "charge_distance_field_line_rearrangement",
+                    "confidence": 0.99,
+                }
+            ]
+        }
+        transport = FakeTransport(outputs=[malformed, malformed, compact])
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "answer_fields": ["research_question"],
+            "proposal": {"facet_id": "research_question"},
+            "question": "你准备比较什么条件，并观察什么现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            research,
+            pending,
+            {"idea_development": {"active_facet_id": "research_question"}},
+        )
+
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(
+            transport.requests[-1]["text"]["format"]["name"],
+            "ece329_compact_dialogue_acts",
+        )
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["design_updates"][0]["value"],
+            research,
+        )
+
+    def test_correction_only_result_recovers_concrete_comparison_replacement(self) -> None:
+        new_cases = ["直线路径", "圆弧路径", "闭合路径"]
+        message = (
+            "基础比较“无损线路、有损线路”与研究问题不对应，"
+            "请改为“直线路径、圆弧路径、闭合路径”。"
+        )
+        correction_only = {
+            "intent": "PROVIDE_FEEDBACK",
+            "target": "baseline_comparisons",
+            "resolved_value_json": None,
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "CORRECT_ASSISTANT",
+                        "target": "previous_design_draft",
+                        "operation": "MERGE",
+                        "content": {
+                            "error_type": "DESIGN_MISMATCH",
+                            "explanation": "原基础比较与研究问题不一致",
+                            "affected_fields": ["baseline_comparisons"],
+                        },
+                        "confidence": 0.98,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        compact = {
+            "actions": [
+                {
+                    "type": "CORRECT_ASSISTANT",
+                    "target": "previous_design_draft",
+                    "operation": "MERGE",
+                    "content": json.dumps(
+                        {
+                            "error_type": "DESIGN_MISMATCH",
+                            "explanation": "原基础比较与研究问题不一致",
+                            "affected_fields": ["baseline_comparisons"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "semantic_key": "comparison_mismatch_correction",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_COMPARISON",
+                    "target": "path_cases",
+                    "operation": "REPLACE",
+                    "content": json.dumps(
+                        {
+                            "comparison_id": "path_cases",
+                            "action": "MODIFY",
+                            "cases": new_cases,
+                            "replace_all": True,
+                            "semantic_key": "probe_path_geometry_cases",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "semantic_key": "probe_path_geometry_cases",
+                    "confidence": 0.99,
+                },
+            ]
+        }
+        transport = FakeTransport(outputs=[correction_only, compact])
+        pending = {
+            "type": "CONFIRM_STAGE_OR_MODIFY",
+            "subject": Stage.IDEA_BRAINSTORMING.value,
+            "proposal": {"baseline_comparisons": ["无损线路", "有损线路"]},
+            "question": "请整体检查当前实验想法。",
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            message,
+            pending,
+            {
+                "research_question": "比较不同路径形状下场量分布的差异",
+                "baseline_comparisons": [
+                    {
+                        "comparison_id": "path_cases",
+                        "cases": ["无损线路", "有损线路"],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "MODIFY_PREVIOUS_PROPOSAL")
+        self.assertEqual(
+            result["semantic_updates"]["comparison_updates"][0]["cases"],
+            new_cases,
+        )
+        self.assertIn(
+            "基础比较的增删、替换或改名",
+            transport.requests[1]["instructions"],
+        )
+
+    def test_emvr_reference_request_recovers_uncertainty_without_unresolved_loop(self) -> None:
+        message = "我不确定，需要你给几个常见的例子"
+        rich = {
+            "intent": "REQUEST_MORE_EXAMPLES",
+            "target": "research_object",
+            "resolved_value_json": None,
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "UNRESOLVED",
+                        "target": "research_object",
+                        "operation": "MERGE",
+                        "content": "我不确定",
+                        "source_text": "我不确定",
+                        "source_start": 0,
+                        "source_end": 4,
+                        "semantic_key": "unsure_about_objects",
+                        "confidence": 0.74,
+                    },
+                    {
+                        "type": "REQUEST_REFERENCE",
+                        "target": "research_object",
+                        "operation": "EXECUTE",
+                        "content": None,
+                        "source_text": "需要你给几个常见的例子",
+                        "source_start": 5,
+                        "source_end": len(message),
+                        "semantic_key": "request_object_examples",
+                        "confidence": 0.98,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        compact = {
+            "actions": [
+                {
+                    "type": "REQUEST_REFERENCE",
+                    "target": "research_object",
+                    "operation": "EXECUTE",
+                    "content": "",
+                    "source_text": message,
+                    "source_start": 0,
+                    "source_end": len(message),
+                    "semantic_key": "request_object_examples",
+                    "confidence": 0.99,
+                }
+            ]
+        }
+        transport = FakeTransport(outputs=[rich, compact])
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            {
+                "type": "ANSWER_EMVR_STAGE_QUESTION",
+                "subject": "research_object",
+                "answer_fields": ["research_object"],
+                "question": "这个VR实验需要哪些核心对象？",
+            },
+            {},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertEqual(result["unresolved_content"], [])
+        self.assertIn("MODIFY_EMVR_FIELD", transport.requests[1]["instructions"])
+        self.assertIn("changed_quantities", transport.requests[1]["instructions"])
+        self.assertIn("reference_condition", transport.requests[1]["instructions"])
+
+    def test_emvr_field_recovery_allows_report_only_stage_fields(self) -> None:
+        message = "用于比较的基准状态改为两球相距2.0 m"
+        transport = FakeTransport(
+            output={
+                "actions": [
+                    {
+                        "type": "MODIFY_STAGE_FIELD",
+                        "target": "reference_condition",
+                        "operation": "REPLACE",
+                        "content": "两球相距2.0 m",
+                        "source_text": message,
+                        "source_start": 0,
+                        "source_end": len(message),
+                        "semantic_key": "reference_distance_2m",
+                        "confidence": 0.99,
+                    }
+                ]
+            }
+        )
+        generator = OpenAIStageGenerator(transport=transport)
+
+        raw, _, _ = generator._recover_emvr_open_answer(
+            json.dumps({"user_message": message}, ensure_ascii=False),
+            {
+                "type": "CONFIRM_STAGE_OR_MODIFY",
+                "subject": Stage.VARIABLES_AND_CONDITIONS.value,
+                "answer_fields": ["controlled_conditions", "reference_condition"],
+            },
+        )
+
+        self.assertEqual(raw["dialogue_acts"][0]["target"], "reference_condition")
+        self.assertIn("MODIFY_STAGE_FIELD", transport.requests[0]["instructions"])
+        self.assertIn("reference_condition", transport.requests[0]["instructions"])
+
+    def test_compact_recovery_splits_parallel_emvr_objective_edits(self) -> None:
+        clauses = [
+            "概念目标再精简一些",
+            "比较目标改得更具体",
+            "交互目标改为通过拖动对象理解距离变化",
+        ]
+        message = "；".join(clauses)
+        rich = {
+            "intent": "UNCLEAR",
+            "target": None,
+            "resolved_value_json": None,
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "UNRESOLVED",
+                        "target": "learning_objectives",
+                        "operation": "MERGE",
+                        "content": message,
+                        "source_text": message,
+                        "source_start": 0,
+                        "source_end": len(message),
+                        "semantic_key": "objective_revisions",
+                        "confidence": 0.72,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.72,
+        }
+        targets = [
+            "conceptual_objective",
+            "analysis_objective",
+            "vr_interaction_objective",
+        ]
+        values = [
+            "解释场线重排的物理原因",
+            "具体比较同种与异种电荷的中间区域场线",
+            "通过拖动对象理解距离变化",
+        ]
+        actions = []
+        search_start = 0
+        for clause, target, value in zip(clauses, targets, values):
+            start = message.index(clause, search_start)
+            actions.append(
+                {
+                    "type": "MODIFY_EMVR_FIELD",
+                    "target": target,
+                    "operation": "REPLACE",
+                    "content": value,
+                    "source_text": clause,
+                    "source_start": start,
+                    "source_end": start + len(clause),
+                    "semantic_key": f"revise_{target}",
+                    "confidence": 0.98,
+                }
+            )
+            search_start = start + len(clause)
+        transport = FakeTransport(outputs=[rich, {"actions": actions}])
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            {
+                "type": "CONFIRM_STAGE_OR_MODIFY",
+                "subject": Stage.LEARNING_OBJECTIVES.value,
+                "question": "这组学习目标是否准确？",
+            },
+            {},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        updates = result["semantic_updates"]["emvr_design_update"]["field_updates"]
+        self.assertEqual([item["field_id"] for item in updates], targets)
+        self.assertFalse(result["unresolved_content"])
+
+    def test_long_multi_command_turn_recovers_omitted_first_revision(self) -> None:
+        question = "距离从远到近变化时，两种电荷配置的场线重排有何差异？"
+        message = (
+            f"把研究问题改为“{question}”；"
+            "同时把距离和相对方向都加入VR中可调内容。"
+        )
+        second_clause = "同时把距离和相对方向都加入VR中可调内容"
+        rich_missing_first = {
+            "intent": "MODIFY_PREVIOUS_PROPOSAL",
+            "target": "independent_variable",
+            "resolved_value_json": json.dumps(
+                ["两个物体之间的距离", "两个物体的相对方向"],
+                ensure_ascii=False,
+            ),
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "MODIFY_STAGE_FIELD",
+                        "target": "independent_variable",
+                        "operation": "REPLACE",
+                        "content": ["两个物体之间的距离", "两个物体的相对方向"],
+                        "source_text": second_clause,
+                        "semantic_key": "charge_separation_and_orientation",
+                        "confidence": 0.99,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.99,
+        }
+        compact_complete = {
+            "actions": [
+                {
+                    "type": "MODIFY_DESIGN_FIELD",
+                    "target": "research_question",
+                    "operation": "REPLACE",
+                    "content": question,
+                    "source_text": f"把研究问题改为“{question}”",
+                    "semantic_key": "distance_polarity_field_line_question",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_STAGE_FIELD",
+                    "target": "independent_variable",
+                    "operation": "REPLACE",
+                    "content": "两个物体之间的距离和相对方向",
+                    "source_text": second_clause,
+                    "semantic_key": "charge_separation_and_orientation",
+                    "confidence": 0.99,
+                },
+            ]
+        }
+        transport = FakeTransport(outputs=[rich_missing_first, compact_complete])
+        session = guided_session(
+            stage_index=list(Stage).index(Stage.RESEARCH_QUESTION)
+        )
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        pending = {
+            "type": "CONFIRM_STAGE_OR_MODIFY",
+            "interaction_state": InteractionState.EMVR_DIRECT.value,
+            "subject": Stage.RESEARCH_QUESTION.value,
+            "answer_fields": [
+                "research_question",
+                "independent_variable",
+                "observations",
+            ],
+            "proposal": {"research_question": "原研究问题"},
+            "question": "请核对当前研究问题。",
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            pending,
+            {"research_question": "原研究问题"},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        design_updates = result["semantic_updates"]["design_updates"]
+        stage_updates = result["semantic_updates"]["stage_field_updates"]
+        self.assertEqual(design_updates[0]["field"], "research_question")
+        self.assertEqual(design_updates[0]["value"], question)
+        self.assertEqual(stage_updates[0]["field"], "independent_variable")
+        self.assertIn("距离", str(stage_updates[0]["value"]))
+        self.assertIn("相对方向", str(stage_updates[0]["value"]))
+
+    def test_omitted_actions_in_long_variable_answer_use_compact_field_split(self) -> None:
+        answer = (
+            "把距离和相对方向作为自变量，观察中间区域的场线弯曲与连接，"
+            "电荷量、物体尺寸和显示精度保持不变。"
+        )
+        rich_without_actions = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": Stage.VARIABLES_AND_CONDITIONS.value,
+            "resolved_value_json": json.dumps(answer, ensure_ascii=False),
+            "semantic_updates_json": json.dumps(
+                {"pending_answer_status": "CLEAR"},
+                ensure_ascii=False,
+            ),
+            "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+        }
+        compact = {
+            "actions": [
+                {
+                    "type": "MODIFY_STAGE_FIELD",
+                    "target": "independent_variable",
+                    "operation": "REPLACE",
+                    "content": "距离和相对方向",
+                    "semantic_key": "source_distance_and_relative_orientation",
+                    "confidence": 0.98,
+                },
+                {
+                    "type": "MODIFY_STAGE_FIELD",
+                    "target": "observations",
+                    "operation": "REPLACE",
+                    "content": "中间区域的场线弯曲与连接",
+                    "semantic_key": "middle_region_field_line_shape",
+                    "confidence": 0.98,
+                },
+                {
+                    "type": "MODIFY_STAGE_FIELD",
+                    "target": "controlled_conditions",
+                    "operation": "REPLACE",
+                    "content": "电荷量、物体尺寸和显示精度",
+                    "semantic_key": "fixed_charge_geometry_display_precision",
+                    "confidence": 0.98,
+                },
+            ]
+        }
+        transport = FakeTransport(
+            outputs=[rich_without_actions, rich_without_actions, compact]
+        )
+        pending = {
+            "type": "ANSWER_STAGE_QUESTION",
+            "subject": Stage.VARIABLES_AND_CONDITIONS.value,
+            "answer_fields": [
+                "independent_variable",
+                "observations",
+                "controlled_conditions",
+            ],
+            "question": "主动改变、观察和保持不变的量分别是什么？",
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(list(Stage).index(Stage.VARIABLES_AND_CONDITIONS)),
+            answer,
+            pending,
+            {"research_direction": "比较两个电荷靠近时的场线变化"},
+        )
+
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(result["intent"], "MODIFY_PREVIOUS_PROPOSAL")
+        self.assertEqual(
+            {
+                item["field"]
+                for item in result["semantic_updates"]["stage_field_updates"]
+            },
+            {"independent_variable", "observations", "controlled_conditions"},
+        )
+
+    def test_intent_resolver_repairs_an_omitted_active_facet_decision(self) -> None:
+        base = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": "research_question",
+            "resolved_value_json": None,
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.96,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    **base,
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "facet_updates": [],
+                            "comparison_updates": [
+                                {
+                                    "comparison_id": "polarity_cases",
+                                    "action": "ACCEPT",
+                                    "cases": ["同种电荷", "异种电荷"],
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+                {
+                    **base,
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "facet_updates": [
+                                {
+                                    "facet_id": "research_question",
+                                    "status": "CLEAR",
+                                }
+                            ],
+                            "comparison_updates": [
+                                {
+                                    "comparison_id": "polarity_cases",
+                                    "action": "ACCEPT",
+                                    "cases": ["同种电荷", "异种电荷"],
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question", "title": "研究问题"},
+            "question": "你想比较什么条件，并观察哪种现象怎样改变？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+        generator = OpenAIStageGenerator(transport=transport)
+
+        result = generator.resolve_intent(
+            guided_session(),
+            "在同种或异种电荷条件下缩短距离，观察场线空间分布的变化",
+            pending,
+            {
+                "idea_development": {
+                    "active_facet_id": "research_question",
+                },
+                "baseline_comparisons": [
+                    {
+                        "comparison_id": "polarity_cases",
+                        "recommended_cases": ["同种电荷", "异种电荷"],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["facet_updates"],
+            [{"facet_id": "research_question", "status": "CLEAR"}],
+        )
+        self.assertEqual(len(transport.requests), 2)
+        repair_text = transport.requests[1]["input"][0]["content"][-1]["text"]
+        self.assertIn("research_question", repair_text)
+        self.assertIn("同时保留comparison_updates", repair_text)
+        instructions = transport.requests[0]["instructions"]
+        self.assertIn("research_question不要求使用问号或疑问句", instructions)
+        self.assertIn("candidate_answer", instructions)
+
+    def test_confirmed_candidate_modification_is_semantically_reparsed(self) -> None:
+        candidate = "增加分层介质作为第三种材料条件，原来的导体和均匀介质都保留"
+        base = {
+            "target": "material_cases",
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    **base,
+                    "intent": "ACCEPT_PREVIOUS_PROPOSAL",
+                    "resolved_value_json": None,
+                    "semantic_updates_json": None,
+                },
+                {
+                    **base,
+                    "intent": "MODIFY_PREVIOUS_PROPOSAL",
+                    "resolved_value_json": json.dumps(candidate, ensure_ascii=False),
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "comparison_updates": [
+                                {
+                                    "comparison_id": "material_cases",
+                                    "action": "MODIFY",
+                                    "cases": ["分层介质"],
+                                    "merge_with_existing": True,
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "dialogue_acts_json": json.dumps(
+                        [
+                            {
+                                "type": "MODIFY_COMPARISON",
+                                "target": "material_cases",
+                                "operation": "MERGE",
+                                "content": {
+                                    "comparison_id": "material_cases",
+                                    "action": "MODIFY",
+                                    "cases": ["分层介质"],
+                                    "merge_with_existing": True,
+                                },
+                                "confidence": 0.99,
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        pending = {
+            "type": "CONFIRM_OR_MODIFY",
+            "subject": "material_cases",
+            "proposal": ["导体", "均匀介质"],
+            "question": "是否保留当前材料对照？",
+            "candidate_answer": candidate,
+            "candidate_resolution": "MODIFY_PREVIOUS_PROPOSAL",
+            "candidate_binding_authorized": True,
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "对，就是我刚才补充的内容",
+            pending,
+            {"baseline_comparisons": [{"comparison_id": "material_cases"}]},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "MODIFY_PREVIOUS_PROPOSAL")
+        self.assertEqual(
+            result["resolved_value"]["comparison_id"],
+            "material_cases",
+        )
+        self.assertEqual(result["source"], "SEMANTIC_MULTI_ACT")
+        reparsed_context = json.loads(
+            transport.requests[1]["input"][0]["content"][0]["text"]
+        )
+        self.assertEqual(reparsed_context["user_message"], candidate)
+        self.assertTrue(
+            reparsed_context["pending_action"]["candidate_confirmation_received"]
+        )
+        self.assertIn(
+            "comparison_updates",
+            result["semantic_updates"],
+        )
+        self.assertEqual(
+            result["semantic_updates"]["comparison_updates"][0]["cases"],
+            ["分层介质"],
+        )
+
+    def test_initial_course_idea_gets_a_semantic_second_pass_before_clarification(self) -> None:
+        idea = "我想探究静电场中两个物体靠近时电场线如何重新分布"
+        transport = FakeTransport(
+            outputs=[
+                {
+                    "intent": "UNCLEAR",
+                    "target": None,
+                    "resolved_value_json": None,
+                    "semantic_updates_json": json.dumps(
+                        {"course_scope_status": "COURSE_CONTENT"},
+                        ensure_ascii=False,
+                    ),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.72,
+                },
+                {
+                    "intent": "ANSWER_CURRENT_QUESTION",
+                    "target": "initial_idea",
+                    "resolved_value_json": json.dumps(idea, ensure_ascii=False),
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "course_scope_status": "COURSE_CONTENT",
+                            "stage_one_direction_detail": idea,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.96,
+                },
+            ]
+        )
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            idea,
+            None,
+            {},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(result["resolved_value"], idea)
+
+    def test_safe_initial_idea_is_not_rejected_after_two_unclear_labels(self) -> None:
+        idea = "我想研究各种物体放在一起时电场线分布怎样相互影响"
+        unclear = {
+            "intent": "UNCLEAR",
+            "target": None,
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.74,
+        }
+        transport = FakeTransport(outputs=[unclear, unclear])
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            idea,
+            None,
+            {
+                "topic_lock": {"locked": False},
+                "intent_entry_context": {
+                    "direction_status": "NOT_ESTABLISHED",
+                },
+                "current_course_evidence": {
+                    "lecture_concepts": [
+                        {"concept": "静电场与材料边界"},
+                    ],
+                    "supplemental_concepts": [],
+                },
+            },
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertEqual(result["target"], "exploration_scenes")
+        self.assertIsNone(result["resolved_value"])
+        self.assertEqual(
+            result["unresolved_content"][0]["content"],
+            idea,
+        )
+
+    def test_stage_one_unclear_without_course_evidence_opens_breadth_exploration(self) -> None:
+        unclear = {
+            "intent": "UNCLEAR",
+            "target": None,
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.74,
+        }
+        transport = FakeTransport(outputs=[unclear, unclear])
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "请先带我浏览课程里的实验方向",
+            None,
+            {
+                "topic_lock": {"locked": False},
+                "intent_entry_context": {
+                    "direction_status": "NOT_ESTABLISHED",
+                },
+                "current_course_evidence": {
+                    "lecture_concepts": [],
+                    "supplemental_concepts": [],
+                },
+            },
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertEqual(result["target"], "exploration_scenes")
+        self.assertTrue(result["semantic_updates"]["no_direction"])
+        self.assertTrue(result["unresolved_content"])
+
+    def test_stage_one_unclear_with_nonblocking_pending_uses_breadth_recovery(self) -> None:
+        unclear = {
+            "intent": "UNCLEAR",
+            "target": None,
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.74,
+        }
+        pending = {
+            "type": "CONFIRM_OR_MODIFY",
+            "subject": "idea_brainstorming",
+            "proposal": {"alternative_ideas": []},
+            "question": "你想沿着哪个方向继续？",
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "REQUEST_MORE_EXAMPLES",
+                "UNCLEAR",
+            ],
+        }
+        transport = FakeTransport(outputs=[unclear, unclear])
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "请先帮助我拓展课程里的实验思路",
+            pending,
+            {
+                "topic_lock": {"locked": False},
+                "intent_entry_context": {
+                    "direction_status": "NOT_ESTABLISHED",
+                },
+                "current_course_evidence": {
+                    "lecture_concepts": [],
+                    "supplemental_concepts": [],
+                },
+            },
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertTrue(result["semantic_updates"]["no_direction"])
+        self.assertEqual(
+            result["semantic_updates"]["course_scope_status"],
+            "COURSE_CONTENT",
+        )
+        self.assertTrue(result["unresolved_content"])
+
+    def test_open_question_cannot_accept_a_missing_candidate(self) -> None:
+        answer = "比较同种与异种电荷由远到近时，中间电场线的弯曲和连接方式"
+        accepted_without_candidate = {
+            "intent": "ACCEPT_PREVIOUS_PROPOSAL",
+            "target": "research_question",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.96,
+        }
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question", "title": "研究问题"},
+            "question": "你准备改变什么条件，并观察哪种现象？",
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+        transport = FakeTransport(
+            outputs=[accepted_without_candidate, accepted_without_candidate]
+        )
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            answer,
+            pending,
+            {"idea_development": {"active_facet_id": "research_question"}},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "UNCLEAR")
+        self.assertIsNone(result["resolved_value"])
+        self.assertFalse(result["semantic_updates"].get("design_updates"))
+        self.assertFalse(result["semantic_updates"].get("facet_updates"))
+        self.assertTrue(result["unresolved_content"])
+
+    def test_explicit_structured_no_direction_is_not_forced_into_an_answer(self) -> None:
+        response = {
+            "intent": "UNCLEAR",
+            "target": "direction_outline",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps(
+                {
+                    "no_direction": True,
+                    "course_scope_status": "COURSE_CONTENT",
+                    "facet_updates": [
+                        {"facet_id": "direction_outline", "status": "MISSING"}
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.92,
+        }
+        transport = FakeTransport(outputs=[response, response])
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "direction_outline",
+            "proposal": {"facet_id": "direction_outline"},
+            "question": "你目前最想探索什么现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "",
+            pending,
+            {"idea_development": {"active_facet_id": "direction_outline"}},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertTrue(result["semantic_updates"].get("no_direction"))
+
+    def test_candidate_confirmation_does_not_loop_when_repair_stays_unclear(self) -> None:
+        candidate = "补充观察中间平面的场强，并保留原来的场线比较"
+        transport = FakeTransport(
+            outputs=[
+                {
+                    "intent": "ACCEPT_PREVIOUS_PROPOSAL",
+                    "target": "observation_plan",
+                    "resolved_value_json": None,
+                    "semantic_updates_json": None,
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.98,
+                },
+                {
+                    "intent": "UNCLEAR",
+                    "target": "observation_plan",
+                    "resolved_value_json": None,
+                    "semantic_updates_json": None,
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.70,
+                },
+            ]
+        )
+        pending = {
+            "type": "CONFIRM_STAGE_OR_MODIFY",
+            "subject": "observation_plan",
+            "proposal": {"observations": ["电场线"]},
+            "candidate_answer": candidate,
+            "candidate_resolution": "MODIFY_PREVIOUS_PROPOSAL",
+            "candidate_binding_authorized": True,
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "就是刚才的补充",
+            pending,
+            {},
+        )
+
+        self.assertEqual(result["intent"], "ACCEPT_PREVIOUS_PROPOSAL")
+        self.assertIsNone(result["resolved_value"])
+        self.assertTrue(result["advance_requested"])
+        self.assertEqual(
+            result["semantic_updates"]["control_actions"],
+            ["ACCEPT"],
+        )
+
+    def test_candidate_confirmation_does_not_loop_when_repair_repeats_accept(self) -> None:
+        candidate = "补充观察中间区域的场强，并保留原来的场线比较"
+        accepted = {
+            "intent": "ACCEPT_PREVIOUS_PROPOSAL",
+            "target": "observation_plan",
+            "resolved_value_json": None,
+            "semantic_updates_json": None,
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        transport = FakeTransport(outputs=[accepted, accepted])
+        pending = {
+            "type": "CONFIRM_STAGE_OR_MODIFY",
+            "subject": "observation_plan",
+            "proposal": {"observations": ["电场线"]},
+            "candidate_answer": candidate,
+            "candidate_resolution": "MODIFY_PREVIOUS_PROPOSAL",
+            "candidate_binding_authorized": True,
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "是",
+            pending,
+            {},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "ACCEPT_PREVIOUS_PROPOSAL")
+        self.assertIsNone(result["resolved_value"])
+        self.assertTrue(result["advance_requested"])
+        self.assertEqual(
+            result["semantic_updates"]["control_actions"],
+            ["ACCEPT"],
+        )
+
+    def test_unbound_guided_answer_confirmation_is_reparsed_into_field_action(self) -> None:
+        candidate = "比较导体和介质在同样外加电场下的场线弯曲与空间分布"
+        transport = FakeTransport(
+            outputs=[
+                {
+                    "intent": "ACCEPT_PREVIOUS_PROPOSAL",
+                    "target": "research_question",
+                    "resolved_value_json": None,
+                    "semantic_updates_json": None,
+                    "dialogue_acts_json": json.dumps(
+                        [
+                            {
+                                "type": "CONTROL",
+                                "target": "ACCEPT",
+                                "operation": "MERGE",
+                                "content": None,
+                                "confidence": 0.98,
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.98,
+                },
+                {
+                    "intent": "ANSWER_CURRENT_QUESTION",
+                    "target": "research_question",
+                    "resolved_value_json": json.dumps(candidate, ensure_ascii=False),
+                    "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+                    "dialogue_acts_json": json.dumps(
+                        [
+                            {
+                                "type": "ANSWER_PENDING_QUESTION",
+                                "target": "research_question",
+                                "operation": "REPLACE",
+                                "content": candidate,
+                                "confidence": 0.99,
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.99,
+                },
+            ]
+        )
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question"},
+            "question": "你想比较什么条件，并观察什么现象？",
+            "candidate_answer": candidate,
+            "candidate_binding_authorized": False,
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            "沿用刚才的回答",
+            pending,
+            {"idea_development": {"active_facet_id": "research_question"}},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(result["dialogue_acts"][0]["target"], "research_question")
+        reparsed = json.loads(
+            transport.requests[1]["input"][0]["content"][0]["text"]
+        )
+        self.assertEqual(reparsed["user_message"], candidate)
+        self.assertEqual(
+            reparsed["pending_action"]["candidate_followup_intent"],
+            "ACCEPT_PREVIOUS_PROPOSAL",
+        )
+
+    def test_unbound_emvr_candidate_is_split_before_advance(self) -> None:
+        candidate = (
+            "实验对象是两个带电球；手柄拖动其中一个球改变距离；"
+            "观察两球之间电场线的弯曲和重排。"
+        )
+        advance = {
+            "intent": "ADVANCE_STAGE",
+            "target": "IDEA_BRAINSTORMING",
+            "resolved_value_json": None,
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "CONTROL",
+                        "target": "ADVANCE",
+                        "operation": "MERGE",
+                        "content": None,
+                        "confidence": 0.98,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": True,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        parsed = {
+            **advance,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "MODIFY_EMVR_FIELD",
+                        "target": "research_object",
+                        "operation": "REPLACE",
+                        "content": "两个带电球",
+                        "confidence": 0.99,
+                    },
+                    {
+                        "type": "MODIFY_EMVR_FIELD",
+                        "target": "required_behaviors",
+                        "operation": "REPLACE",
+                        "content": "用手柄拖动其中一个带电球改变两球距离",
+                        "confidence": 0.99,
+                    },
+                    {
+                        "type": "MODIFY_EMVR_FIELD",
+                        "target": "observed_quantities",
+                        "operation": "REPLACE",
+                        "content": "两球之间电场线的弯曲和重排",
+                        "confidence": 0.99,
+                    },
+                    {
+                        "type": "CONTROL",
+                        "target": "ADVANCE",
+                        "operation": "MERGE",
+                        "content": None,
+                        "confidence": 0.99,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            "confidence": 0.99,
+        }
+        transport = FakeTransport(outputs=[advance, parsed])
+        pending = {
+            "type": "ANSWER_EMVR_STAGE_QUESTION",
+            "interaction_state": InteractionState.EMVR_DIRECT.value,
+            "subject": "IDEA_BRAINSTORMING",
+            "answer_fields": [
+                "research_object",
+                "interactions",
+                "observed_quantities",
+            ],
+            "question": "请说明对象、操作和观察现象。",
+            "candidate_answer": candidate,
+            "candidate_binding_authorized": False,
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "ADVANCE_STAGE",
+                "UNCLEAR",
+            ],
+        }
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            "继续进入下一部分",
+            pending,
+            {"emvr_design": {"experiment_brief": "静电场VR实验"}},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertTrue(result["advance_requested"])
+        self.assertEqual(
+            [item["target"] for item in result["dialogue_acts"][:-1]],
+            ["research_object", "required_behaviors", "observed_quantities"],
+        )
+        reparsed = json.loads(
+            transport.requests[1]["input"][0]["content"][0]["text"]
+        )
+        self.assertEqual(reparsed["user_message"], candidate)
+        self.assertEqual(
+            reparsed["pending_action"]["candidate_followup_intent"],
+            "ADVANCE_STAGE",
+        )
+
+    def test_unbound_emvr_draft_revision_is_committed_before_confirmation_advance(self) -> None:
+        candidate = "把主要变化量改为两球间距，其他条件保持不变"
+        control_only = {
+            "intent": "ADVANCE_STAGE",
+            "target": "VARIABLES_AND_CONDITIONS",
+            "resolved_value_json": None,
+            "semantic_updates_json": None,
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "CONTROL",
+                        "target": "ADVANCE",
+                        "operation": "MERGE",
+                        "content": None,
+                        "confidence": 0.97,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": True,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+        }
+        repaired = {
+            **control_only,
+            "intent": "MODIFY_PREVIOUS_PROPOSAL",
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "MODIFY_EMVR_FIELD",
+                        "target": "changed_quantities",
+                        "operation": "REPLACE",
+                        "content": ["两球间距"],
+                        "confidence": 0.99,
+                    },
+                    {
+                        "type": "CONTROL",
+                        "target": "ADVANCE",
+                        "operation": "MERGE",
+                        "content": None,
+                        "confidence": 0.99,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            "confidence": 0.99,
+        }
+        transport = FakeTransport(outputs=[control_only, repaired])
+        pending = {
+            "type": "CONFIRM_STAGE_OR_MODIFY",
+            "interaction_state": InteractionState.EMVR_DIRECT.value,
+            "subject": "VARIABLES_AND_CONDITIONS",
+            "proposal": {"changed_quantities": ["相对方向"]},
+            "candidate_answer": candidate,
+            "candidate_resolution": "MODIFY_PREVIOUS_PROPOSAL",
+            "candidate_binding_authorized": False,
+            "allowed_intents": [
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "ADVANCE_STAGE",
+                "UNCLEAR",
+            ],
+        }
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            "继续",
+            pending,
+            {"emvr_design": {"changed_quantities": ["相对方向"]}},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["dialogue_acts"][0]["target"], "changed_quantities")
+        self.assertTrue(result["advance_requested"])
+
+    def test_intent_resolver_repairs_omitted_later_stage_answer_status(self) -> None:
+        base = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": "VARIABLES_AND_CONDITIONS",
+            "resolved_value_json": None,
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.96,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {**base, "semantic_updates_json": None},
+                {
+                    **base,
+                    "semantic_updates_json": json.dumps(
+                        {"pending_answer_status": "CLEAR"},
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        pending = {
+            "type": "ANSWER_STAGE_QUESTION",
+            "subject": "VARIABLES_AND_CONDITIONS",
+            "proposal": {"stage_title": "变量与条件"},
+            "question": "哪些量主动改变、观察或保持不变？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+        generator = OpenAIStageGenerator(transport=transport)
+
+        result = generator.resolve_intent(
+            guided_session(),
+            "改变两个源之间的距离，观察电场线，并保持电荷量不变",
+            pending,
+            {"research_direction": "比较两个电荷源"},
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["pending_answer_status"],
+            "CLEAR",
+        )
+        self.assertEqual(len(transport.requests), 2)
+        repair_text = transport.requests[1]["input"][0]["content"][-1]["text"]
+        self.assertIn("pending_answer_status=CLEAR", repair_text)
+
+    def test_intent_resolver_repairs_omitted_emvr_open_answer_status(self) -> None:
+        base = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": "IDEA_BRAINSTORMING",
+            "resolved_value_json": None,
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {**base, "semantic_updates_json": None},
+                {
+                    **base,
+                    "semantic_updates_json": json.dumps(
+                        {"pending_answer_status": "CLEAR"},
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        pending = {
+            "type": "ANSWER_EMVR_STAGE_QUESTION",
+            "subject": "IDEA_BRAINSTORMING",
+            "proposal": {"stage_title": "实验目标与初始构想"},
+            "question": "实验中有哪些对象、操作和希望观察的现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        generator = OpenAIStageGenerator(transport=transport)
+
+        result = generator.resolve_intent(
+            session,
+            (
+                "学生拖动两个带电物体改变距离，观察导体和介质附近的电场线，"
+                "理解材料边界对场分布的影响"
+            ),
+            pending,
+            {"emvr_design": {"brief": "设计静电场VR实验"}},
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["pending_answer_status"],
+            "CLEAR",
+        )
+        self.assertEqual(len(transport.requests), 2)
+        repair_text = transport.requests[1]["input"][0]["content"][-1]["text"]
+        self.assertIn("pending_answer_status=CLEAR", repair_text)
+
+    def test_intent_resolver_repairs_unclear_emvr_draft_supplement(self) -> None:
+        supplement = (
+            "保持电荷配置不变，增加导体与介质材料切换，并比较界面附近的场线"
+        )
+        base = {
+            "target": "IDEA_BRAINSTORMING",
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    **base,
+                    "intent": "UNCLEAR",
+                    "resolved_value_json": None,
+                },
+                {
+                    **base,
+                    "intent": "MODIFY_PREVIOUS_PROPOSAL",
+                    "resolved_value_json": json.dumps(
+                        supplement,
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        pending = {
+            "type": "CONFIRM_STAGE_OR_MODIFY",
+            "interaction_state": InteractionState.EMVR_DIRECT.value,
+            "subject": "IDEA_BRAINSTORMING",
+            "proposal": {"stage_title": "实验目标与初始构想"},
+            "question": "请补充或修改；如果草稿准确也可以继续。",
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "MODIFY_PREVIOUS_PROPOSAL",
+                "UNCLEAR",
+            ],
+        }
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        generator = OpenAIStageGenerator(transport=transport)
+
+        result = generator.resolve_intent(
+            session,
+            supplement,
+            pending,
+            {"emvr_design": {"brief": "拖动两个电荷观察场线"}},
+        )
+
+        self.assertEqual(result["intent"], "MODIFY_PREVIOUS_PROPOSAL")
+        self.assertEqual(result["resolved_value"], supplement)
+        self.assertEqual(len(transport.requests), 2)
+        repair_text = transport.requests[1]["input"][0]["content"][-1]["text"]
+        self.assertIn("MODIFY_PREVIOUS_PROPOSAL", repair_text)
+        self.assertIn("candidate_answer", repair_text)
+
+    def test_two_unclear_parses_do_not_autofill_open_questions_in_either_mode(self) -> None:
+        student_answers = {
+            "guided": (
+                guided_session(),
+                {
+                    "type": "ANSWER_IDEA_FACET",
+                    "subject": "research_question",
+                    "proposal": {"facet_id": "research_question"},
+                    "question": "你想比较什么条件，并观察什么现象？",
+                    "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+                },
+                "比较不同闭合曲面的局部场强分布，并观察总通量是否保持不变",
+            ),
+            "emvr": (
+                guided_session(),
+                {
+                    "type": "ANSWER_EMVR_STAGE_QUESTION",
+                    "subject": "VARIABLES_AND_CONDITIONS",
+                    "proposal": {"stage_title": "变量与条件"},
+                    "question": "学生主动改变和观察哪些量？",
+                    "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+                },
+                "改变闭合曲面的大小和形状，观察局部场强箭头和总通量",
+            ),
+        }
+        student_answers["emvr"][0].interaction_state = InteractionState.EMVR_DIRECT
+
+        for label, (session, pending, answer) in student_answers.items():
+            with self.subTest(mode=label):
+                unclear = {
+                    "intent": "UNCLEAR",
+                    "target": pending["subject"],
+                    "resolved_value_json": None,
+                    "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.82,
+                }
+                generator = OpenAIStageGenerator(
+                    transport=FakeTransport(
+                        outputs=[unclear, unclear, {"actions": []}]
+                    )
+                )
+
+                result = generator.resolve_intent(
+                    session,
+                    answer,
+                    pending,
+                    {"research_direction": "比较闭合曲面上的电场与通量"},
+                )
+
+                self.assertIn(result["intent"], {"UNCLEAR", "REQUEST_MORE_EXAMPLES"})
+                self.assertIsNone(result["resolved_value"])
+                self.assertFalse(result["semantic_updates"].get("design_updates"))
+                self.assertFalse(result["semantic_updates"].get("stage_field_updates"))
+
+    def test_guided_facet_uses_compact_semantic_recovery_before_clarifying(self) -> None:
+        answer = (
+            "比较规则导体边界和尖角或窄缝边界对电场线与等势面分布的影响"
+        )
+        unclear = {
+            "intent": "UNCLEAR",
+            "target": "research_question",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.82,
+        }
+        compact = {
+            "actions": [
+                {
+                    "type": "ANSWER_PENDING_QUESTION",
+                    "target": "research_question",
+                    "operation": "REPLACE",
+                    "content": answer,
+                    "source_text": answer,
+                    "source_start": 0,
+                    "source_end": len(answer),
+                    "semantic_key": "boundary_shape_field_distribution_question",
+                    "confidence": 0.99,
+                }
+            ]
+        }
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question"},
+            "question": "你想比较什么条件，并观察什么现象？",
+            "allowed_intents": ["ANSWER_CURRENT_QUESTION", "UNCLEAR"],
+        }
+        transport = FakeTransport(outputs=[unclear, unclear, compact])
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            answer,
+            pending,
+            {"research_direction": "导体边界形状与静电场分布"},
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(result["dialogue_acts"][0]["target"], "research_question")
+        self.assertEqual(result["dialogue_acts"][0]["content"], answer)
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_guided_field_recovery_splits_answer_and_comparison_after_invalid_compact_act(self) -> None:
+        answer = (
+            "我希望解释闭合面形状变化时总通量为何不变；同时把基础比较改成"
+            "曲面完全包住场源、部分包住场源、未包住场源"
+        )
+        unclear = {
+            "intent": "UNCLEAR",
+            "target": "learning_objective",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.8,
+        }
+        invalid_compact = {
+            "actions": [
+                {
+                    "type": "ANSWER_PENDING_QUESTION",
+                    "target": "unknown_guided_field",
+                    "operation": "REPLACE",
+                    "content": answer,
+                    "source_text": answer,
+                    "source_start": 0,
+                    "source_end": len(answer),
+                    "semantic_key": "invalid_whole_turn_binding",
+                    "confidence": 0.99,
+                }
+            ]
+        }
+        recovered = {
+            "actions": [
+                {
+                    "type": "ANSWER_PENDING_QUESTION",
+                    "target": "learning_objective",
+                    "operation": "REPLACE",
+                    "content": "解释闭合面形状变化时总通量为何不变",
+                    "source_text": "我希望解释闭合面形状变化时总通量为何不变",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "gauss_flux_learning_objective",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_COMPARISON",
+                    "target": "baseline_comparisons",
+                    "operation": "REPLACE",
+                    "content": json.dumps(
+                        {
+                            "comparison_id": "baseline_comparisons",
+                            "action": "MODIFY",
+                            "cases": [
+                                "曲面完全包住场源",
+                                "部分包住场源",
+                                "未包住场源",
+                            ],
+                            "replace_all": True,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "source_text": "基础比较改成曲面完全包住场源、部分包住场源、未包住场源",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "gaussian_surface_enclosure_cases",
+                    "confidence": 0.99,
+                },
+            ]
+        }
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "learning_objective",
+            "answer_fields": ["learning_objective"],
+            "question": "完成实验后希望能够解释或判断什么？",
+        }
+        transport = FakeTransport(
+            outputs=[unclear, unclear, invalid_compact, recovered]
+        )
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            answer,
+            pending,
+            {"research_direction": "闭合面形状与电通量"},
+        )
+
+        self.assertEqual(len(transport.requests), 4)
+        self.assertEqual(
+            transport.requests[-1]["text"]["format"]["name"],
+            "ece329_guided_design_turn_recovery",
+        )
+        self.assertEqual(
+            {act["type"] for act in result["dialogue_acts"]},
+            {"ANSWER_PENDING_QUESTION", "MODIFY_COMPARISON"},
+        )
+
+    def test_emvr_long_open_answer_uses_field_only_recovery(self) -> None:
+        answer = (
+            "学生用手柄拖拽两个点电荷来改变距离和相对位置。比较同种电荷和异种电荷"
+            "两种配置下的场线分布，观察电场线的合并、扭曲和重排。"
+        )
+        unclear = {
+            "intent": "UNCLEAR",
+            "target": "research_object",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps([], ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.7,
+        }
+        recovered_actions = {
+            "actions": [
+                {
+                    "type": "ANSWER_PENDING_QUESTION",
+                    "target": "research_object",
+                    "operation": "REPLACE",
+                    "content": "两个点电荷",
+                    "source_text": "两个点电荷",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "two_point_charges",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_EMVR_FIELD",
+                    "target": "required_behaviors",
+                    "operation": "REPLACE",
+                    "content": "用手柄拖拽两个点电荷",
+                    "source_text": "学生用手柄拖拽两个点电荷",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "controller_drag_charges",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_EMVR_FIELD",
+                    "target": "changed_quantities",
+                    "operation": "REPLACE",
+                    "content": "两个点电荷的距离和相对位置",
+                    "source_text": "改变距离和相对位置",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "charge_distance_relative_position",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_EMVR_FIELD",
+                    "target": "comparison_cases",
+                    "operation": "REPLACE",
+                    "content": "同种电荷和异种电荷两种配置",
+                    "source_text": "同种电荷和异种电荷两种配置",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "same_opposite_charge_cases",
+                    "confidence": 0.99,
+                },
+                {
+                    "type": "MODIFY_EMVR_FIELD",
+                    "target": "observed_quantities",
+                    "operation": "REPLACE",
+                    "content": "电场线的合并、扭曲和重排",
+                    "source_text": "观察电场线的合并、扭曲和重排",
+                    "source_start": -1,
+                    "source_end": -1,
+                    "semantic_key": "field_line_reconfiguration",
+                    "confidence": 0.99,
+                },
+            ]
+        }
+        invalid_compact = {
+            "actions": [
+                {
+                    "type": "ANSWER_PENDING_QUESTION",
+                    "target": "student_objects",
+                    "operation": "REPLACE",
+                    "content": answer,
+                    "source_text": answer,
+                    "source_start": 0,
+                    "source_end": len(answer),
+                    "semantic_key": "invalid_unregistered_target",
+                    "confidence": 0.99,
+                }
+            ]
+        }
+        transport = FakeTransport(
+            outputs=[unclear, unclear, invalid_compact, recovered_actions]
+        )
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        session.design_context = {
+            "idea": {"original": "我想做一个静电场实验"},
+            "emvr_design": {
+                "experiment_brief": "我想做一个静电场实验",
+                "field_state": {"experiment_brief": "我想做一个静电场实验"},
+            },
+        }
+        pending = {
+            "type": "ANSWER_EMVR_STAGE_QUESTION",
+            "interaction_state": InteractionState.EMVR_DIRECT.value,
+            "subject": "research_object",
+            "answer_fields": ["research_object"],
+            "question": "这个VR实验中，学生具体会操作或比较哪些物理对象？",
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            answer,
+            pending,
+            {"research_direction": "我想做一个静电场实验"},
+        )
+
+        self.assertEqual(len(transport.requests), 4)
+        self.assertEqual(
+            transport.requests[-1]["text"]["format"]["name"],
+            "ece329_emvr_open_answer_recovery",
+        )
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        emvr_updates = result["semantic_updates"]["emvr_design_update"][
+            "field_updates"
+        ]
+        self.assertTrue(
+            {
+                "research_object",
+                "required_behaviors",
+                "changed_quantities",
+                "comparison_cases",
+                "observed_quantities",
+            }.issubset({item["field_id"] for item in emvr_updates})
+        )
+
+    def test_reference_request_is_not_forced_into_contextual_answer(self) -> None:
+        output = {
+            "intent": "REQUEST_MORE_EXAMPLES",
+            "target": "research_question",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+        }
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "research_question",
+            "proposal": {"facet_id": "research_question"},
+            "question": "你想比较什么条件，并观察什么现象？",
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "REQUEST_MORE_EXAMPLES",
+                "UNCLEAR",
+            ],
+        }
+        generator = OpenAIStageGenerator(transport=FakeTransport(output=output))
+
+        result = generator.resolve_intent(
+            guided_session(),
+            "请先给我一个课程内参考",
+            pending,
+            {"research_direction": "比较闭合曲面的电通量"},
+        )
+
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+
+    def test_intent_resolver_reviews_a_substantive_facet_answer_marked_missing(self) -> None:
+        base = {
+            "intent": "ANSWER_CURRENT_QUESTION",
+            "target": "hypothesis",
+            "resolved_value_json": None,
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.97,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    **base,
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "facet_updates": [
+                                {"facet_id": "hypothesis", "status": "MISSING"}
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+                {
+                    **base,
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "facet_updates": [
+                                {"facet_id": "hypothesis", "status": "CLEAR"}
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        pending = {
+            "type": "ANSWER_IDEA_FACET",
+            "subject": "hypothesis",
+            "proposal": {"facet_id": "hypothesis", "title": "假设与预期趋势"},
+            "question": "预计条件变化时会出现什么趋势，物理理由是什么？",
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "REQUEST_MORE_EXAMPLES",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            (
+                "导体内部电场应接近零，介质内部仍有电场；靠近激励源时畸变会增强，"
+                "而旋转理想球体不应改变分布，因为几何仍保持对称。"
+            ),
+            pending,
+            {"research_direction": "比较导体球与介质球附近的静电场"},
+        )
+
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["facet_updates"],
+            [{"facet_id": "hypothesis", "status": "CLEAR"}],
+        )
+        self.assertEqual(len(transport.requests), 2)
+        repair_text = transport.requests[1]["input"][0]["content"][-1]["text"]
+        self.assertIn("不能一边返回ANSWER_CURRENT_QUESTION一边标MISSING", repair_text)
+        self.assertIn("REQUEST_MORE_EXAMPLES", repair_text)
+
+    def test_semantic_no_direction_gets_a_friendly_course_brainstorm_lead(self) -> None:
+        session = guided_session()
+        message = "完全没头绪，先帮我打开思路"
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                message,
+                options=[],
+                idea_context=session.design_context["idea"],
+                semantic_updates={"no_direction": True},
+            )
+        )
+        options = retrieved_brainstorm_options(message, session)
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "COURSE_CONTENT",
+                        "brainstorm_phase": "BREADTH_EXPLORATION",
+                        "alternative_ideas": options,
+                        "exploration_scenes": build_exploration_scenes(options),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+        output = OpenAIStageGenerator(transport=transport).generate(session, message)
+
+        self.assertTrue(
+            output.assistant_message.startswith("好的，那我来帮助你拓展思路")
+        )
+        self.assertEqual(output.stage_payload["input_category"], "COURSE_CONTENT")
+        self.assertNotIn("不属于ECE329", output.assistant_message)
+
+    def test_semantic_no_direction_rejects_a_contradictory_scope_message(self) -> None:
+        session = guided_session()
+        message = "我现在完全不知道可以研究什么"
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                message,
+                options=[],
+                idea_context=session.design_context["idea"],
+                semantic_updates={"no_direction": True},
+            )
+        )
+        options = retrieved_brainstorm_options(message, session)
+        transport = FakeTransport(
+            valid_output(
+                assistant_message=(
+                    "你提出的主题不属于ECE329课程范围。下面是可改造、可组合的物理图景。"
+                ),
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "COURSE_CONTENT",
+                        "brainstorm_phase": "BREADTH_EXPLORATION",
+                        "alternative_ideas": options,
+                        "exploration_scenes": build_exploration_scenes(options),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+        output = OpenAIStageGenerator(
+            transport=transport,
+            repair_attempts=0,
+        ).generate(session, message)
+
+        self.assertTrue(
+            output.assistant_message.startswith("好的，那我来帮助你拓展思路")
+        )
+        self.assertNotIn("不属于ECE329", output.assistant_message)
+        self.assertEqual(output.stage_payload["input_category"], "COURSE_CONTENT")
+
+    def test_generator_builds_responses_request_and_parses_json(self) -> None:
+        transport = FakeTransport(valid_output())
+        generator = OpenAIStageGenerator(transport=transport, model="test-model")
+
+        output = generator.generate(guided_session(), "研究传输线驻波")
+
+        self.assertEqual(output.stage_payload["brainstorm_activity"], "RELATIONSHIP_DISCOVERY")
+        request = transport.requests[0]
+        self.assertEqual(request["model"], "test-model")
+        self.assertFalse(request["store"])
+        self.assertEqual(request["text"]["format"]["type"], "json_schema")
+        self.assertTrue(request["text"]["format"]["strict"])
+        self.assertIn("Lecture Notes定义课程范围", request["instructions"])
+        self.assertIn("不把Lecture Notes当成唯一参考答案", request["instructions"])
+        serialized_input = request["input"][0]["content"][0]["text"]
+        self.assertIn('"current_stage": "IDEA_BRAINSTORMING"', serialized_input)
+
+    def test_later_guided_stage_requires_structured_readiness(self) -> None:
+        session = guided_session(
+            stage_index=list(Stage).index(Stage.VARIABLES_AND_CONDITIONS)
+        )
+        missing = valid_output(
+            assistant_message="距离作为主动改变量，场线形状作为观察量。",
+            stage_payload_json=json.dumps(
+                {"independent_variable": "两个源之间的距离"},
+                ensure_ascii=False,
+            ),
+            student_task="还需要补充哪些控制条件？",
+        )
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(
+                transport=FakeTransport(missing),
+                repair_attempts=0,
+            ).generate(session, "改变距离并观察电场线")
+
+        complete = valid_output(
+            assistant_message="距离作为主动改变量，场线形状作为观察量。",
+            stage_payload_json=json.dumps(
+                {
+                    "independent_variable": "两个源之间的距离",
+                    "stage_readiness": {
+                        "ready_for_confirmation": True,
+                        "remaining_gaps": [],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            student_task="请整体检查这部分变量安排。",
+        )
+        output = OpenAIStageGenerator(
+            transport=FakeTransport(complete),
+            repair_attempts=0,
+        ).generate(session, "改变距离并观察电场线")
+        self.assertTrue(
+            output.stage_payload["stage_readiness"]["ready_for_confirmation"]
+        )
+
+    def test_emvr_stage_one_prompt_uses_formula_first_contract(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "emvr_formula_phase": "FORMULA_CANDIDATES_PRESENTED",
+                        "formula_cards": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+        session = guided_session()
+        session.interaction_state = InteractionState.EMVR_DIRECT
+
+        output = OpenAIStageGenerator(transport=transport).generate(
+            session,
+            "请使用EMVR设计传输线驻波实验",
+        )
+
+        self.assertEqual(
+            output.stage_payload["emvr_formula_phase"],
+            "FORMULA_CANDIDATES_PRESENTED",
+        )
+        request_text = transport.requests[0]["input"][0]["content"][0]["text"]
+        self.assertIn("formula_cards", request_text)
+        self.assertIn("coverage_matrix", request_text)
+        self.assertIn("experiment_methods", request_text)
+        self.assertIn("不能从固定图景库抽取", request_text)
+        self.assertIn("不得填充普通EMVR对象、变量、流程", request_text)
+        self.assertNotIn("alternative_ideas数组", request_text)
+
+    def test_stateful_generator_chains_response_id_and_resends_instructions(self) -> None:
+        transport = FakeTransport(valid_output(), response_id="resp_next")
+        session = guided_session()
+        session.model_context["openai_previous_response_id"] = "resp_previous"
+        session.history.append({"user_message": "较早的一轮", "output": {}})
+        generator = OpenAIStageGenerator(transport=transport, stateful=True)
+
+        generator.generate(session, "研究传输线驻波")
+
+        request = transport.requests[0]
+        self.assertTrue(request["store"])
+        self.assertEqual(request["reasoning"], {"effort": "medium"})
+        self.assertEqual(request["previous_response_id"], "resp_previous")
+        self.assertIn("你是ZJUI ECE329实验设计工作流助手", request["instructions"])
+        self.assertIn('"recent_history": []', request["input"][0]["content"][0]["text"])
+        self.assertEqual(
+            session.model_context["openai_previous_response_id"],
+            "resp_next",
+        )
+
+    def test_stateful_generator_recovers_from_stale_response_chain(self) -> None:
+        transport = FakeTransport(
+            valid_output(),
+            response_id="resp_recovered",
+            errors=[ModelHTTPError(404, "previous_response_not_found")],
+        )
+        session = guided_session()
+        session.model_context["openai_previous_response_id"] = "resp_stale"
+        session.history.append({"user_message": "已确认的对比要求，不要再问", "output": {}})
+        generator = OpenAIStageGenerator(transport=transport, stateful=True)
+
+        output = generator.generate(session, "继续研究传输线驻波")
+
+        self.assertEqual(output.stage_payload["input_category"], "COURSE_CONTENT")
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(
+            transport.requests[0]["previous_response_id"],
+            "resp_stale",
+        )
+        self.assertNotIn("previous_response_id", transport.requests[1])
+        self.assertNotIn("已确认的对比要求，不要再问", transport.requests[0]["input"][0]["content"][0]["text"])
+        self.assertIn("已确认的对比要求，不要再问", transport.requests[1]["input"][0]["content"][0]["text"])
+        self.assertEqual(
+            session.model_context["openai_previous_response_id"],
+            "resp_recovered",
+        )
+        self.assertEqual(generator.runtime_info()["response_chain_resets"], 1)
+
+    def test_stateless_generator_uses_local_recent_history_only(self) -> None:
+        transport = FakeTransport(valid_output())
+        session = guided_session()
+        session.model_context["openai_previous_response_id"] = "resp_ignored"
+        session.history.append({"user_message": "较早的一轮", "output": {}})
+
+        OpenAIStageGenerator(transport=transport, stateful=False).generate(
+            session,
+            "研究传输线驻波",
+        )
+
+        request = transport.requests[0]
+        self.assertFalse(request["store"])
+        self.assertNotIn("previous_response_id", request)
+        self.assertIn("较早的一轮", request["input"][0]["content"][0]["text"])
+        self.assertEqual(
+            session.model_context["openai_previous_response_id"],
+            "resp_ignored",
+        )
+
+    def test_stateful_output_repair_restores_local_history_and_is_bounded(self) -> None:
+        session = guided_session()
+        session.model_context['openai_previous_response_id'] = 'resp_existing'
+        session.history.append({'user_message': '保留已经回答的边界条件', 'output': {}})
+        transport = FakeTransport(outputs=[{'assistant_message': 'invalid'}, valid_output()])
+        OpenAIStageGenerator(transport=transport, stateful=True).generate(session, '研究传输线驻波')
+        self.assertEqual(len(transport.requests), 2)
+        self.assertNotIn('previous_response_id', transport.requests[1])
+        self.assertIn('保留已经回答的边界条件', transport.requests[1]['input'][0]['content'][0]['text'])
+        broken = FakeTransport(error=ModelHTTPError(404, 'previous_response_not_found'))
+        with self.assertRaises(ModelHTTPError):
+            OpenAIStageGenerator(transport=broken, stateful=True).generate(session, '继续')
+        self.assertEqual(len(broken.requests), 2)
+
+    def test_emvr_final_stage_omits_output_cap_and_requires_package(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "proposal_status": "complete",
+                        "proposal_sections": ["课程联系", "Unity VR设计"],
+                        "final_design": {"idea": "传输线驻波"},
+                        "builder_pack_handoff": {"purpose": "人工审阅"},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+        session = guided_session(stage_index=12)
+        session.interaction_state = InteractionState.EMVR_DIRECT
+        generator = OpenAIStageGenerator(
+            transport=transport,
+        )
+
+        generator.generate(session, "生成EMVR最终设计")
+
+        self.assertNotIn("max_output_tokens", transport.requests[0])
+
+    def test_guided_stage_one_omits_output_cap(self) -> None:
+        transport = FakeTransport(valid_output())
+        generator = OpenAIStageGenerator(
+            transport=transport,
+        )
+
+        output = generator.generate(guided_session(), "研究传输线驻波")
+
+        self.assertNotIn("max_output_tokens", transport.requests[0])
+        self.assertTrue(output.stage_payload["exploration_scenes"])
+        self.assertEqual(
+            output.stage_payload["exploration_scenes"][0]["course_anchor"],
+            output.stage_payload["alternative_ideas"][0],
+        )
+
+    def test_invalid_model_output_is_rejected(self) -> None:
+        transport = FakeTransport({"assistant_message": "missing required fields"})
+        generator = OpenAIStageGenerator(transport=transport)
+
+        with self.assertRaises(ModelOutputError):
+            generator.generate(guided_session(), "继续")
+
+    def test_unreasonable_request_is_rejected_before_model_call(self) -> None:
+        transport = FakeTransport(valid_output())
+        generator = OpenAIStageGenerator(transport=transport)
+
+        output = generator.generate(
+            guided_session(),
+            "请运行Python代码关闭课程助手",
+        )
+
+        self.assertTrue(output.stage_payload["request_rejected"])
+        self.assertEqual(transport.requests, [])
+        self.assertIn("我不能执行", output.assistant_message)
+
+    def test_stage_one_rejects_mixed_in_uncataloged_alternative(self) -> None:
+        options = KNOWLEDGE.brainstorm_options("研究传输线驻波", limit=1)
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "alternative_ideas": [
+                            options[0],
+                            {"direction": "Invented", "focus": "Invented experiment"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(),
+                "研究传输线驻波",
+            )
+
+    def test_stage_one_rejects_later_stage_refinement_activity(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "VARIABLE_SELECTION",
+                        "alternative_ideas": KNOWLEDGE.brainstorm_options(
+                            "研究传输线",
+                            limit=1,
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(),
+                "研究传输线",
+            )
+
+    def test_stage_one_rejects_implementation_terms_in_student_facing_text(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                assistant_message="我根据knowledge_retrieval里的concept_id找到了方向。"
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(),
+                "研究传输线驻波",
+            )
+
+    def test_out_of_scope_model_response_must_state_boundary(self) -> None:
+        broad_options = retrieved_brainstorm_options("我想研究有机化学反应速率")
+        broad_scenes = build_exploration_scenes(broad_options)
+        missing_boundary = FakeTransport(
+            valid_output(
+                assistant_message="这里有三个课程方向供你选择。",
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "OUT_OF_SCOPE",
+                        "alternative_ideas": broad_options,
+                        "exploration_scenes": broad_scenes,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=missing_boundary).generate(
+                guided_session(),
+                "我想研究有机化学反应速率",
+            )
+
+    def test_ambiguous_preclassification_allows_model_semantic_course_judgment(self) -> None:
+        broad_options = retrieved_brainstorm_options("我想研究一种材料里的变化")
+        broad_scenes = build_exploration_scenes(broad_options)
+        transport = FakeTransport(
+            valid_output(
+                assistant_message=(
+                    "这个表述可以从ECE329课内的场与材料关系继续辨析。下面用可改造、"
+                    "可组合的物理图景启发思考；其中的启发性延伸不是课程结论。"
+                ),
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "COURSE_CONTENT",
+                        "alternative_ideas": broad_options,
+                        "exploration_scenes": broad_scenes,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+        output = OpenAIStageGenerator(transport=transport).generate(
+            guided_session(),
+            "我想研究一种材料里的变化",
+        )
+
+        self.assertEqual(output.stage_payload["input_category"], "COURSE_CONTENT")
+
+    def test_model_selection_turn_removes_choice_list_and_requests_description(self) -> None:
+        session = guided_session()
+        options = KNOWLEDGE.brainstorm_options("研究传输线驻波", limit=3)
+        session.history.append(
+            {
+                "handled_stage": Stage.IDEA_BRAINSTORMING.value,
+                "user_message": "研究传输线驻波",
+                "output": {
+                    "stage_payload": {
+                        "input_category": "COURSE_CONTENT",
+                        "alternative_ideas": options,
+                    }
+                },
+            }
+        )
+        session.design_context["idea"].update(
+            {
+                "topic_anchor": "研究传输线驻波",
+                "current_focus": "研究传输线驻波",
+                "focus_history": ["研究传输线驻波"],
+                "course_scope_confirmed": True,
+                "brainstorm_phase": "BREADTH_EXPLORATION",
+            }
+        )
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                str(options[0]["focus"]),
+                options=options,
+                idea_context=session.design_context["idea"],
+                selected_option_id=str(options[0]["option_id"]),
+            )
+        )
+        transport = FakeTransport(valid_output())
+
+        output = OpenAIStageGenerator(transport=transport).generate(
+            session,
+            str(options[0]["focus"]),
+        )
+
+        self.assertEqual(output.stage_payload["brainstorm_phase"], "INTEREST_DESCRIPTION")
+        self.assertEqual(output.stage_payload["alternative_ideas"], [])
+
+    def test_scene_choice_overrides_a_misclassified_new_batch_request(self) -> None:
+        message = (
+            "我对图景A感兴趣，主要是关于导体和介质在同样外加电场下，"
+            "场线分布和弯曲有什么不同。"
+        )
+        visible_scenes = [
+            {
+                "label": "图景 A",
+                "option_id": "scene:material-boundary",
+                "title": "把同一物体换成不同材料",
+                "physical_picture": "比较导体与介质在同一外加场中的场线分布",
+            },
+            {
+                "label": "图景 B",
+                "option_id": "scene:transmission-line",
+                "title": "观察传输线反射",
+                "physical_picture": "改变端接并观察反射波",
+            },
+            {
+                "label": "图景 C",
+                "option_id": "scene:magnetic-map",
+                "title": "绘制磁场参数图",
+                "physical_picture": "改变回路条件并比较磁场",
+            },
+        ]
+        request_act = {
+            "type": "REQUEST_REFERENCE",
+            "target": "exploration_scenes",
+            "operation": "EXECUTE",
+            "content": "",
+            "source_text": message,
+            "source_start": 0,
+            "source_end": len(message),
+            "semantic_key": "another_scene_batch",
+            "confidence": 0.94,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    "intent": "REQUEST_MORE_EXAMPLES",
+                    "target": "exploration_scenes",
+                    "resolved_value_json": None,
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "control_actions": ["REQUEST_REFERENCE"],
+                            "course_scope_status": "COURSE_CONTENT",
+                            # Reproduce the stale directionless label visible
+                            # in trail31's repeated-scene response.
+                            "no_direction": True,
+                            "stage_one_scene_response": "REQUEST_NEW_BATCH",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "dialogue_acts_json": json.dumps(
+                        [request_act], ensure_ascii=False
+                    ),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.94,
+                },
+                {
+                    "decision": "SELECT_OR_DEVELOP",
+                    "selected_option_ids": ["scene:material-boundary"],
+                    "direction_detail": (
+                        "比较导体和介质在同一外加电场中的场线分布与弯曲差异"
+                    ),
+                    "confidence": 0.99,
+                },
+            ]
+        )
+        pending = {
+            "type": "ANSWER_STAGE_QUESTION",
+            "subject": Stage.IDEA_BRAINSTORMING.value,
+            "question": "你想沿哪幅图景继续？",
+            "allowed_intents": [
+                "ANSWER_CURRENT_QUESTION",
+                "REQUEST_MORE_EXAMPLES",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            message,
+            pending,
+            {"latest_exploration_scenes": visible_scenes},
+        )
+
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(result["intent"], "ANSWER_CURRENT_QUESTION")
+        self.assertEqual(
+            result["semantic_updates"]["stage_one_scene_response"],
+            "SELECT_OR_DEVELOP",
+        )
+        self.assertFalse(result["semantic_updates"]["scene_batch_authorized"])
+        self.assertFalse(result["semantic_updates"]["no_direction"])
+        self.assertEqual(
+            result["semantic_updates"]["selected_option_ids"],
+            ["scene:material-boundary"],
+        )
+        self.assertIn(
+            "导体和介质",
+            result["semantic_updates"]["stage_one_direction_detail"],
+        )
+
+    def test_new_scene_batch_requires_independent_semantic_authorization(self) -> None:
+        message = "这三幅图景都不是我想研究的，请另外展示一批不同图景。"
+        visible_scenes = [
+            {"label": "图景 A", "option_id": "scene:a", "title": "A"},
+            {"label": "图景 B", "option_id": "scene:b", "title": "B"},
+            {"label": "图景 C", "option_id": "scene:c", "title": "C"},
+        ]
+        request_act = {
+            "type": "REQUEST_REFERENCE",
+            "target": "exploration_scenes",
+            "operation": "EXECUTE",
+            "content": "",
+            "source_text": message,
+            "source_start": 0,
+            "source_end": len(message),
+            "semantic_key": "another_scene_batch",
+            "confidence": 0.98,
+        }
+        transport = FakeTransport(
+            outputs=[
+                {
+                    "intent": "REQUEST_MORE_EXAMPLES",
+                    "target": "exploration_scenes",
+                    "resolved_value_json": None,
+                    "semantic_updates_json": json.dumps(
+                        {
+                            "control_actions": ["REQUEST_REFERENCE"],
+                            "stage_one_scene_response": "REQUEST_NEW_BATCH",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "dialogue_acts_json": json.dumps(
+                        [request_act], ensure_ascii=False
+                    ),
+                    "advance_requested": False,
+                    "preserve_current_design": True,
+                    "confidence": 0.98,
+                },
+                {
+                    "decision": "REQUEST_NEW_BATCH",
+                    "selected_option_ids": [],
+                    "direction_detail": None,
+                    "confidence": 0.99,
+                },
+            ]
+        )
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            guided_session(),
+            message,
+            None,
+            {"latest_exploration_scenes": visible_scenes},
+        )
+
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertTrue(result["semantic_updates"]["scene_batch_authorized"])
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(
+            transport.requests[1]["text"]["format"]["name"],
+            "ece329_scene_batch_verification",
+        )
+
+    def test_selected_direction_rejects_a_new_visible_scene_list(self) -> None:
+        session = guided_session()
+        options = KNOWLEDGE.brainstorm_options("研究静电场中的两个源", limit=3)
+        session.history.append(
+            {
+                "handled_stage": Stage.IDEA_BRAINSTORMING.value,
+                "user_message": "研究静电场中的两个源",
+                "output": {
+                    "stage_payload": {
+                        "input_category": "COURSE_CONTENT",
+                        "alternative_ideas": options,
+                    }
+                },
+            }
+        )
+        session.design_context["idea"].update(
+            {
+                "topic_anchor": "研究静电场中的两个源",
+                "current_focus": "研究静电场中的两个源",
+                "focus_history": ["研究静电场中的两个源"],
+                "course_scope_confirmed": True,
+                "brainstorm_phase": "BREADTH_EXPLORATION",
+            }
+        )
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                str(options[0]["focus"]),
+                options=options,
+                idea_context=session.design_context["idea"],
+                selected_option_id=str(options[0]["option_id"]),
+            )
+        )
+        invalid = valid_output()
+        invalid["assistant_message"] = (
+            "图景 A｜重新列出一个方向。图景 B｜再列出另一个方向。"
+        )
+        generator = OpenAIStageGenerator(
+            transport=FakeTransport(invalid),
+            repair_attempts=0,
+        )
+
+        with self.assertRaises(ModelOutputError):
+            generator.generate(session, str(options[0]["focus"]))
+
+    def test_model_depth_turn_uses_grounded_connections_without_choice_list(self) -> None:
+        session = guided_session()
+        options = KNOWLEDGE.brainstorm_options("研究传输线驻波", limit=3)
+        session.design_context["idea"].update(
+            {
+                "topic_anchor": "研究传输线驻波",
+                "current_focus": "研究传输线驻波 → 反射与驻波",
+                "focus_history": ["研究传输线驻波", "反射与驻波"],
+                "course_scope_confirmed": True,
+                "brainstorm_phase": "INTEREST_DESCRIPTION",
+                "selected_focus": "反射与驻波",
+            }
+        )
+        message = "我想弄清入射波和反射波叠加后为什么形成驻波"
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                message,
+                options=options,
+                idea_context=session.design_context["idea"],
+            )
+        )
+        transport = FakeTransport(valid_output())
+
+        output = OpenAIStageGenerator(transport=transport).generate(session, message)
+
+        self.assertEqual(output.stage_payload["brainstorm_phase"], "DEPTH_EXPANSION")
+        self.assertEqual(output.stage_payload["alternative_ideas"], [])
+        expected_connections = retrieved_brainstorm_options(message, session)
+        self.assertEqual(
+            output.stage_payload["deepening_connections"],
+            expected_connections,
+        )
+
+    def test_ready_combined_direction_rejects_another_forced_choice(self) -> None:
+        session = guided_session()
+        options = KNOWLEDGE.brainstorm_options(
+            "静电场 电场线 电荷源",
+            limit=3,
+        )
+        scenes = build_exploration_scenes(options)
+        session.history.append(
+            {
+                "handled_stage": Stage.IDEA_BRAINSTORMING.value,
+                "user_message": "我想研究静电场中的两个源",
+                "output": {
+                    "stage_payload": {
+                        "input_category": "COURSE_CONTENT",
+                        "alternative_ideas": options,
+                        "exploration_scenes": scenes,
+                    }
+                },
+            }
+        )
+        session.design_context["idea"].update(
+            {
+                "topic_anchor": "我想研究静电场中的两个源",
+                "current_focus": "图景A与图景B的组合",
+                "focus_history": [
+                    "我想研究静电场中的两个源",
+                    "图景A与图景B的组合",
+                ],
+                "course_scope_confirmed": True,
+                "brainstorm_phase": "INTEREST_DESCRIPTION",
+                "selected_scene_ids": ["scene_a", "scene_b"],
+                "selected_course_relations": [options[0], options[1]],
+                "combination_intent": True,
+            }
+        )
+        message = "观察两个源靠近时电场线在中间区域的变化"
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                message,
+                options=options,
+                scenes=scenes,
+                idea_context=session.design_context["idea"],
+            )
+        )
+        transport = FakeTransport(
+            valid_output(
+                assistant_message=(
+                    "这个方向可以继续细化。你想先看同种电荷还是异种电荷？"
+                )
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(session, message)
+
+    def test_model_can_propose_a_new_course_grounded_basic_case_bundle(self) -> None:
+        session = guided_session()
+        session.design_context["idea"].update(
+            {
+                "topic_anchor": "我想研究电磁波偏振",
+                "current_focus": "电磁波偏振 → 偏振轨迹",
+                "focus_history": ["我想研究电磁波偏振", "偏振轨迹"],
+                "course_scope_confirmed": True,
+                "brainstorm_phase": "INTEREST_DESCRIPTION",
+                "selected_focus": "偏振轨迹",
+            }
+        )
+        message = "我想理解正交分量的关系怎样形成不同的偏振轨迹"
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                message,
+                options=KNOWLEDGE.brainstorm_options("电磁波偏振", limit=3),
+                idea_context=session.design_context["idea"],
+            )
+        )
+        self.assertTrue(session.turn_context["ready_for_next_stage"])
+        self.assertEqual(session.turn_context["standard_comparisons"], [])
+
+        comparison = {
+            "comparison_id": "wave_polarization_forms",
+            "cases": ["线偏振", "圆偏振"],
+            "recommended_cases": ["线偏振", "圆偏振"],
+            "case_aliases": {"线偏振": [], "圆偏振": []},
+            "role": "PROPOSED_BASELINE_COMPARISON",
+            "adoption_status": "PENDING",
+            "reason": "两种偏振形式可作为观察正交分量相位关系的基础参照。",
+            "course_concept_ids": ["lecture_24"],
+        }
+        transport = FakeTransport(
+            valid_output(
+                assistant_message=(
+                    "当前方向是理解正交分量如何形成偏振轨迹。建议默认把线偏振与"
+                    "圆偏振作为一组基本对照；确认当前概括即表示采纳，也可以直接删改。"
+                ),
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "COURSE_CONTENT",
+                        "standard_comparisons": [comparison],
+                    },
+                    ensure_ascii=False,
+                ),
+                student_task=(
+                    "如果概括准确，请确认当前方向并进入下一阶段；若有关键遗漏，"
+                    "请直接指出遗漏。"
+                ),
+            )
+        )
+
+        output = OpenAIStageGenerator(transport=transport).generate(session, message)
+
+        proposed = output.stage_payload["standard_comparisons"][0]
+        self.assertEqual(proposed["cases"], ["线偏振", "圆偏振"])
+        self.assertEqual(proposed["adoption_status"], "PENDING")
+        self.assertEqual(proposed["proposal_source"], "COURSE_GROUNDED_MODEL")
+
+    def test_model_basic_case_bundle_rejects_unretrieved_course_grounding(self) -> None:
+        session = guided_session()
+        session.design_context["idea"].update(
+            {
+                "topic_anchor": "我想研究电磁波偏振",
+                "current_focus": "电磁波偏振 → 偏振轨迹",
+                "focus_history": ["我想研究电磁波偏振", "偏振轨迹"],
+                "course_scope_confirmed": True,
+                "brainstorm_phase": "INTEREST_DESCRIPTION",
+                "selected_focus": "偏振轨迹",
+            }
+        )
+        message = "我想理解正交分量的关系怎样形成不同的偏振轨迹"
+        session.turn_context.update(
+            build_stage_one_turn_context(
+                message,
+                options=KNOWLEDGE.brainstorm_options("电磁波偏振", limit=3),
+                idea_context=session.design_context["idea"],
+            )
+        )
+        comparison = {
+            "comparison_id": "invented_case_bundle",
+            "cases": ["情形甲", "情形乙"],
+            "recommended_cases": ["情形甲", "情形乙"],
+            "reason": "声称有课程依据。",
+            "course_concept_ids": ["lecture_999"],
+        }
+        transport = FakeTransport(
+            valid_output(
+                assistant_message=(
+                    "建议默认把情形甲与情形乙作为一组基本对照；确认当前概括即表示采纳。"
+                ),
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "COURSE_CONTENT",
+                        "standard_comparisons": [comparison],
+                    },
+                    ensure_ascii=False,
+                ),
+                student_task=(
+                    "如果概括准确，请确认当前方向并进入下一阶段；若有关键遗漏，"
+                    "请直接指出遗漏。"
+                ),
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(session, message)
+
+    def test_valid_out_of_scope_model_response_keeps_three_course_examples(self) -> None:
+        broad_options = retrieved_brainstorm_options("我想研究有机化学反应速率")
+        broad_scenes = build_exploration_scenes(broad_options)
+        transport = FakeTransport(
+            valid_output(
+                assistant_message=(
+                    "这个主题不属于ECE329课程范围。你可以改从电磁场、电磁波或"
+                    "传输线中的关系开始探索。下面的物理图景可以改造或组合，"
+                    "其中的启发性延伸不是课程结论。"
+                ),
+                stage_payload_json=json.dumps(
+                    {
+                        "brainstorm_activity": "RELATIONSHIP_DISCOVERY",
+                        "input_category": "OUT_OF_SCOPE",
+                        "alternative_ideas": broad_options,
+                        "exploration_scenes": broad_scenes,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+        output = OpenAIStageGenerator(transport=transport).generate(
+            guided_session(),
+            "我想研究有机化学反应速率",
+        )
+
+        self.assertEqual(output.stage_payload["input_category"], "OUT_OF_SCOPE")
+        self.assertEqual(len(output.stage_payload["alternative_ideas"]), 3)
+
+    def test_stage_two_rejects_modified_lecture_reference(self) -> None:
+        reference = KNOWLEDGE.concept_references("研究传输线驻波", limit=1)[0].copy()
+        reference["title"] = "Invented course topic"
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {"course_references": [reference]},
+                    ensure_ascii=False,
+                )
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(stage_index=1),
+                "映射传输线驻波",
+            )
+
+    def test_stage_two_displays_existing_mapping_without_direction_choice(self) -> None:
+        reference = KNOWLEDGE.concept_references("研究传输线驻波", limit=1)[0]
+        transport = FakeTransport(
+            valid_output(
+                assistant_message="现有实验大纲的主要课程支点是传输线驻波，辅助联系是边界反射。",
+                student_task="请检查这段课程映射是否准确；若有遗漏请指出。",
+                stage_payload_json=json.dumps(
+                    {
+                        "primary_course_anchor": reference,
+                        "supporting_course_anchors": [],
+                        "mapped_relationships": ["负载边界与驻波分布的关系"],
+                        "mapping_explanation": "解释已确定实验方向与课程知识的联系。",
+                        "course_references": [reference],
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+        output = OpenAIStageGenerator(transport=transport).generate(
+            guided_session(stage_index=1),
+            "展示当前想法的课程映射",
+        )
+
+        self.assertEqual(output.stage_payload["primary_course_anchor"], reference)
+        self.assertNotRegex(output.assistant_message, r"请选择|你希望把哪|选哪")
+
+    def test_stage_two_rejects_reselecting_a_course_direction(self) -> None:
+        reference = KNOWLEDGE.concept_references("研究传输线驻波", limit=1)[0]
+        transport = FakeTransport(
+            valid_output(
+                assistant_message="你希望把哪一个课程方向作为主要理论核心？",
+                stage_payload_json=json.dumps(
+                    {
+                        "primary_course_anchor": reference,
+                        "course_references": [reference],
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(stage_index=1),
+                "展示当前想法的课程映射",
+            )
+
+    def test_stage_ten_rejects_fake_measured_data(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                student_task="这条曲线符合你的理论预期吗？",
+                visualization_json=json.dumps(
+                    {
+                        "data_type": "theoretical_prediction",
+                        "measured": True,
+                    }
+                ),
+            )
+        )
+        generator = OpenAIStageGenerator(transport=transport)
+
+        with self.assertRaises(ModelOutputError):
+            generator.generate(guided_session(stage_index=9), "生成窗口")
+
+    def test_stage_five_rejects_uncataloged_formula(self) -> None:
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "core_equations": [
+                            {"id": "invented_formula", "expression": "E=mc^2", "pages": [999]}
+                        ]
+                    }
+                )
+            )
+        )
+        generator = OpenAIStageGenerator(transport=transport)
+
+        with self.assertRaises(ModelOutputError):
+            generator.generate(guided_session(stage_index=4), "选择传输线理论公式")
+
+    def test_stage_five_rejects_wrong_pages_for_cataloged_formula(self) -> None:
+        formula = KNOWLEDGE.formula_references("传输线驻波", limit=1)[0].copy()
+        formula["pages"] = [999]
+        transport = FakeTransport(
+            valid_output(stage_payload_json=json.dumps({"core_equations": [formula]}))
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(stage_index=4),
+                "选择传输线理论公式",
+            )
+
+    def test_stage_five_rejects_formula_without_stable_id(self) -> None:
+        formula = KNOWLEDGE.formula_references("研究传输线驻波", limit=1)[0]
+        transport = FakeTransport(
+            valid_output(
+                stage_payload_json=json.dumps(
+                    {
+                        "core_equations": [
+                            formula,
+                            {"expression": "invented", "pages": formula["pages"]},
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+
+        with self.assertRaises(ModelOutputError):
+            OpenAIStageGenerator(transport=transport).generate(
+                guided_session(stage_index=4),
+                "选择传输线理论公式",
+            )
+
+    def test_service_failure_uses_rule_based_fallback(self) -> None:
+        transport = FakeTransport(error=ModelServiceError("temporary"))
+        fallback = FallbackStageGenerator(
+            primary=OpenAIStageGenerator(transport=transport),
+            fallback=RuleBasedStageGenerator(),
+        )
+
+        output = fallback.generate(guided_session(), "研究传输线驻波")
+
+        self.assertTrue(output.stage_payload["alternative_ideas"])
+        self.assertTrue(any('本地规则恢复' in warning for warning in output.warnings))
+        info = fallback.runtime_info()
+        self.assertEqual(info["last_fallback_reason"], "model_transport_error")
+        self.assertEqual(info["fallback_calls"], 1)
+
+    def test_intent_service_failure_can_recover_course_formula_candidates(self) -> None:
+        fallback = FallbackStageGenerator(
+            primary=OpenAIStageGenerator(
+                transport=FakeTransport(error=ModelServiceError("temporary"))
+            ),
+            fallback=RuleBasedStageGenerator(),
+        )
+        engine = WorkflowEngine(
+            generator=fallback,
+            store=InMemorySessionStore(),
+        )
+
+        first = engine.create_design(
+            "还没有具体思路，先带我浏览课上所学内容的大致方向"
+        )
+        self.assertEqual(first["current_stage"], Stage.IDEA_BRAINSTORMING.value)
+        self.assertFalse(first["stage_payload"].get("exploration_scenes"))
+        second = engine.process_turn(first["design_id"], {"message": "我想探究静电场中两个带电球靠近时的电场线"})
+        self.assertEqual(second["current_stage"], Stage.IDEA_BRAINSTORMING.value)
+        self.assertTrue(second["stage_payload"]["formula_cards"])
+        self.assertFalse(second["stage_payload"].get("direction_locked"))
+
+    def test_intent_output_rejection_is_distinct_from_transport_failure(self) -> None:
+        fallback = FallbackStageGenerator(
+            primary=OpenAIStageGenerator(
+                transport=FakeTransport(
+                    error=ModelOutputError("invalid intent payload")
+                )
+            ),
+            fallback=RuleBasedStageGenerator(),
+        )
+
+        result = fallback.resolve_intent(
+            guided_session(),
+            "请先带我浏览课程方向",
+            None,
+            {
+                "topic_lock": {"locked": False},
+                "intent_entry_context": {
+                    "direction_status": "NOT_ESTABLISHED",
+                },
+                "current_course_evidence": {
+                    "lecture_concepts": [],
+                    "supplemental_concepts": [],
+                },
+            },
+        )
+
+        self.assertEqual(result["intent"], "REQUEST_MORE_EXAMPLES")
+        self.assertEqual(
+            fallback.runtime_info()["last_fallback_reason"],
+            "intent_output_rejected",
+        )
+
+    def test_intent_input_exposes_non_blocking_stage_one_entry_context(self) -> None:
+        session = guided_session()
+        carried = {
+            "topic_lock": {"locked": False},
+            "idea_development": {},
+        }
+
+        serialized = json.loads(
+            serialize_intent_input(session, "请帮我拓展方向", None, carried)
+        )
+
+        self.assertTrue(serialized["intent_entry_context"]["is_stage_one_entry"])
+        self.assertTrue(
+            serialized["intent_entry_context"]["pending_action_is_non_blocking"]
+        )
+        self.assertEqual(
+            serialized["intent_entry_context"]["direction_status"],
+            "NOT_ESTABLISHED",
+        )
+
+    def test_invalid_model_output_is_repaired_once_before_fallback(self) -> None:
+        class SequencedTransport:
+            def __init__(self) -> None:
+                self.requests: list[dict[str, Any]] = []
+                self.outputs = [
+                    {"assistant_message": "invalid"},
+                    valid_output(),
+                ]
+
+            def create(self, payload: dict[str, Any]) -> dict[str, Any]:
+                self.requests.append(deepcopy(payload))
+                output = self.outputs.pop(0)
+                return {
+                    "id": f"resp_{len(self.requests)}",
+                    "output_text": json.dumps(output, ensure_ascii=False),
+                }
+
+        transport = SequencedTransport()
+        generator = OpenAIStageGenerator(transport=transport)
+
+        output = generator.generate(guided_session(), "研究传输线驻波")
+
+        self.assertEqual(output.stage_payload["input_category"], "COURSE_CONTENT")
+        self.assertEqual(len(transport.requests), 2)
+        self.assertNotIn("previous_response_id", transport.requests[1])
+        self.assertEqual(
+            [request["reasoning"] for request in transport.requests],
+            [{"effort": "medium"}, {"effort": "medium"}],
+        )
+        info = generator.runtime_info()
+        self.assertEqual(info["output_rejections"], 1)
+        self.assertEqual(info["repair_successes"], 1)
+
+    def test_output_rejection_reason_is_visible_in_health_metrics(self) -> None:
+        fallback = FallbackStageGenerator(
+            primary=OpenAIStageGenerator(
+                transport=FakeTransport({"assistant_message": "invalid"}),
+                repair_attempts=0,
+            ),
+            fallback=RuleBasedStageGenerator(),
+        )
+
+        fallback.generate(guided_session(), "研究传输线驻波")
+
+        info = fallback.runtime_info()
+        self.assertEqual(info["last_fallback_reason"], "model_output_rejected")
+        self.assertEqual(info["output_rejections"], 1)
+
+    def test_auto_mode_without_key_remains_rule_based(self) -> None:
+        generator = generator_from_environment({})
+
+        self.assertIsInstance(generator, RuleBasedStageGenerator)
+        self.assertEqual(generator.runtime_info()["provider"], "rule_based")
+
+    def test_auto_mode_with_transport_enables_openai_without_real_call(self) -> None:
+        transport = FakeTransport(valid_output())
+        generator = generator_from_environment(
+            {
+                "OPENAI_MODEL": "test-model",
+                "ECE329_OPENAI_FALLBACK": "true",
+            },
+            transport=transport,
+        )
+
+        self.assertIsInstance(generator, FallbackStageGenerator)
+        self.assertEqual(generator.runtime_info()["model"], "test-model")
+
+    def test_environment_can_enable_responses_api_continuity(self) -> None:
+        generator = generator_from_environment(
+            {
+                "ECE329_OPENAI_STATEFUL": "true",
+                "ECE329_OPENAI_FALLBACK": "false",
+                "OPENAI_REASONING_EFFORT": "medium",
+                "OPENAI_INTENT_MAX_OUTPUT_TOKENS": "1400",
+            },
+            transport=FakeTransport(valid_output()),
+        )
+
+        self.assertIsInstance(generator, OpenAIStageGenerator)
+        self.assertTrue(generator.runtime_info()["stateful"])
+        self.assertEqual(generator.runtime_info()["reasoning_effort"], "medium")
+        self.assertIsNone(generator.runtime_info()["intent_max_output_tokens"])
+
+    def test_environment_rejects_unsupported_reasoning_effort(self) -> None:
+        with self.assertRaises(ModelConfigurationError):
+            generator_from_environment(
+                {
+                    "ECE329_OPENAI_FALLBACK": "false",
+                    "OPENAI_REASONING_EFFORT": "max",
+                },
+                transport=FakeTransport(valid_output()),
+            )
+
+    def test_direct_generator_construction_validates_request_configuration(self) -> None:
+        transport = FakeTransport(valid_output())
+        with self.assertRaises(ModelConfigurationError):
+            OpenAIStageGenerator(transport=transport, reasoning_effort="max")
+        with self.assertRaises(TypeError):
+            OpenAIStageGenerator(transport=transport, intent_max_output_tokens=0)
+        with self.assertRaises(TypeError):
+            OpenAIStageGenerator(transport=transport, max_output_tokens=float("nan"))
+
+    def test_engine_reports_generator_without_exposing_credentials(self) -> None:
+        engine = WorkflowEngine(generator=RuleBasedStageGenerator())
+
+        self.assertEqual(
+            engine.generator_info(),
+            {"provider": "rule_based", "model": None, "fallback_enabled": False},
+        )
+
+    def test_guided_reference_acceptance_is_not_rejected_as_open_answer(self) -> None:
+        message = "这份参考符合我的想法，继续下一项。"
+        response = {
+            "intent": "ACCEPT_PREVIOUS_PROPOSAL",
+            "target": Stage.CONCEPTUAL_PROCEDURE.value,
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps(
+                {"control_actions": ["ACCEPT", "ADVANCE"]},
+                ensure_ascii=False,
+            ),
+            "dialogue_acts_json": json.dumps(
+                [
+                    {
+                        "type": "CONTROL",
+                        "target": "ACCEPT",
+                        "operation": "EXECUTE",
+                        "content": "",
+                        "source_text": message,
+                        "source_start": 0,
+                        "source_end": len(message),
+                        "semantic_key": "accept_visible_reference",
+                        "confidence": 0.99,
+                    },
+                    {
+                        "type": "CONTROL",
+                        "target": "ADVANCE",
+                        "operation": "EXECUTE",
+                        "content": "",
+                        "source_text": message,
+                        "source_start": 0,
+                        "source_end": len(message),
+                        "semantic_key": "advance_after_acceptance",
+                        "confidence": 0.99,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            "advance_requested": True,
+            "preserve_current_design": True,
+            "confidence": 0.99,
+        }
+        pending = {
+            "type": "ANSWER_STAGE_QUESTION",
+            "subject": Stage.CONCEPTUAL_PROCEDURE.value,
+            "proposal": {"reference_draft": ["建立基准", "改变距离", "记录场线"]},
+            "advance_on_accept": True,
+            "allowed_intents": [
+                "ACCEPT_PREVIOUS_PROPOSAL",
+                "ADVANCE_STAGE",
+                "UNCLEAR",
+            ],
+        }
+
+        result = OpenAIStageGenerator(
+            transport=FakeTransport(response)
+        ).resolve_intent(
+            guided_session(list(Stage).index(Stage.CONCEPTUAL_PROCEDURE)),
+            message,
+            pending,
+            {},
+        )
+
+        self.assertEqual(result["intent"], "ACCEPT_PREVIOUS_PROPOSAL")
+        self.assertTrue(result["advance_requested"])
+
+    def test_emvr_formula_review_reuses_multi_field_acts_without_second_call(self) -> None:
+        message = "分别调整基础比较和观察量。"
+        acts = [
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "comparison_cases",
+                "operation": "REPLACE",
+                "content": ["同种电荷", "异种电荷"],
+                "source_text": message,
+                "source_start": 0,
+                "source_end": len(message),
+                "semantic_key": "comparison_cases_replace",
+                "confidence": 0.98,
+            },
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "observed_quantities",
+                "operation": "REPLACE",
+                "content": ["场线形状、合并、扭曲和重排形态"],
+                "source_text": message,
+                "source_start": 0,
+                "source_end": len(message),
+                "semantic_key": "observations_replace",
+                "confidence": 0.98,
+            },
+        ]
+        response = {
+            "intent": "MODIFY_PREVIOUS_PROPOSAL",
+            "target": "experiment_brief",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps(acts, ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        session = DesignSession(
+            design_id="emvr-multi-review",
+            interaction_state=InteractionState.EMVR_DIRECT,
+            design_context={"idea": {}, "emvr_design": {"field_state": {}}},
+        )
+        transport = FakeTransport(response)
+
+        result = OpenAIStageGenerator(transport=transport).resolve_intent(
+            session,
+            message,
+            {
+                "type": "CONFIRM_EMVR_FORMULA_DIRECTION",
+                "subject": "experiment_brief",
+                "proposal": {},
+                "advance_on_accept": True,
+            },
+            {
+                "emvr_formula_flow": {
+                    "phase": "EXPERIMENT_DIRECTION_REVIEW",
+                }
+            },
+        )
+
+        formula_actions = result["semantic_updates"]["emvr_formula_actions"]
+        revision = next(
+            item for item in formula_actions
+            if item["type"] == "REVISE_EMVR_DIRECTION"
+        )
+        updates = revision["content"]["brief_updates"]
+        self.assertEqual(
+            updates["comparison_cases"]["value"],
+            ["同种电荷", "异种电荷"],
+        )
+        self.assertEqual(
+            updates["observed_quantities"]["value"],
+            ["场线形状、合并、扭曲和重排形态"],
+        )
+        self.assertEqual(len(transport.requests), 1)
+
+    def test_emvr_formula_review_preserves_multiple_edits_to_same_list_field(self) -> None:
+        message = "保留场线形状，再补充零场点和中间区域场强。"
+        acts = [
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "observed_quantities",
+                "operation": "MERGE",
+                "content": ["零场点位置"],
+                "source_text": "补充零场点",
+                "semantic_key": "add_zero_field_point",
+                "confidence": 0.98,
+            },
+            {
+                "type": "MODIFY_EMVR_FIELD",
+                "target": "observed_quantities",
+                "operation": "MERGE",
+                "content": ["中间区域场强"],
+                "source_text": "中间区域场强",
+                "semantic_key": "add_middle_field_strength",
+                "confidence": 0.98,
+            },
+        ]
+        response = {
+            "intent": "MODIFY_PREVIOUS_PROPOSAL",
+            "target": "experiment_brief",
+            "resolved_value_json": None,
+            "semantic_updates_json": json.dumps({}, ensure_ascii=False),
+            "dialogue_acts_json": json.dumps(acts, ensure_ascii=False),
+            "advance_requested": False,
+            "preserve_current_design": True,
+            "confidence": 0.98,
+        }
+        session = DesignSession(
+            design_id="emvr-multi-same-field-review",
+            interaction_state=InteractionState.EMVR_DIRECT,
+            design_context={"idea": {}, "emvr_design": {"field_state": {}}},
+        )
+
+        result = OpenAIStageGenerator(
+            transport=FakeTransport(response)
+        ).resolve_intent(
+            session,
+            message,
+            {
+                "type": "CONFIRM_EMVR_FORMULA_DIRECTION",
+                "subject": "experiment_brief",
+                "proposal": {},
+                "advance_on_accept": True,
+            },
+            {"emvr_formula_flow": {"phase": "EXPERIMENT_DIRECTION_REVIEW"}},
+        )
+
+        revision = next(
+            item
+            for item in result["semantic_updates"]["emvr_formula_actions"]
+            if item["type"] == "REVISE_EMVR_DIRECTION"
+        )
+        self.assertEqual(
+            revision["content"]["brief_updates"]["observed_quantities"],
+            {
+                "operation": "MERGE",
+                "value": ["零场点位置", "中间区域场强"],
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

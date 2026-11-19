@@ -1,0 +1,265 @@
+{
+  "schema_version": "1.6.0",
+  "policy": "deny_unlisted",
+  "categories": {
+    "direct_reuse": [
+      "UnityProject/LocalPackages/com.emvr.lab-common/**",
+      "ApprovedAssets/**",
+      "UnityProject/Packages/**",
+      "UnityProject/ProjectSettings/**"
+    ],
+    "controlled_immutable_copy": [
+      "ReusableFoundation/Gate5MinimalSlice/Source/** -> UnityProject/Assets/Generated/<lab_id>/Gate5Foundation/** via materialize_gate5_foundation.py only"
+    ],
+    "conditional_reuse": [
+      "KnowledgeBase/ReusableCodeArchive/**"
+    ],
+    "knowledge_only": [
+      "KnowledgeBase/docs/**",
+      "KnowledgeBase/rebuild-lessons/**",
+      "LabSpecs/templates/**",
+      "BuildEvidence/EvalTemplates/**"
+    ],
+    "portable_source_reference_control": [
+      "Policies/reuse-source-references.json (maintainer-owned catalog)",
+      "LabSpecs/<lab_id>/source-references.json (labflow-generated immutable binding)"
+    ],
+    "restricted_lab_specific_archive": [
+      "KnowledgeBase/legacy-lab-specific-summaries/** (forbidden during blind rebuild; exact-file user authorization required for non-blind comparison)"
+    ],
+    "maintenance_only_material": [
+      "../EMVR_Workflow_Maintenance/** (forbidden to Builder Agents)",
+      "**/WORKFLOW_MAINTAINER_GUIDE.md (forbidden to Builder Agents)"
+    ],
+    "authorized_conversation_inputs": [
+      "exact requirements/reference documents explicitly uploaded or attached by the user in the current conversation"
+    ],
+    "disabled_optional_integrations": [
+      "OptionalIntegrations/UnityMCP/**",
+      "OptionalIntegrations/LabMCP/**"
+    ],
+    "generated_output": [
+      "UnityProject/Assets/<current_lab_paths_declared_in_implementation_handoff>/**",
+      "UnityProject/Assets/Generated/<lab_id>/ApprovedDependencies/**",
+      "UnityProject/Assets/Generated/<lab_id>/Gate5Foundation/** (tool-generated immutable copy; Builder Agent must not edit)",
+      "LabSpecs/<lab_id>/**",
+      "LabInterfaceContracts/<lab_id>_*.json",
+      "BuildEvidence/<lab_id>/**",
+      "BuildEvidence/<lab_id>/blocker-retrospectives/<sequence>.json (automatic recovery; completed records immutable)",
+      "KnowledgeBase/rebuild-lessons/<lab_id>.md (verified current-run recovery; append through tool only)"
+    ]
+  },
+  "ownership": {
+    "protected_foundation": [
+      ".gitattributes",
+      ".gitignore",
+      "AGENTS.md",
+      "README.md",
+      "README_USER.md",
+      ".agents/**",
+      "Policies/**",
+      "Tools/**",
+      "LocalPackages/**",
+      "UnityProject/LocalPackages/**",
+      "OptionalIntegrations/**",
+      "ReusableFoundation/**",
+      "ApprovedAssets/**",
+      "KnowledgeBase/**",
+      "LabSpecs/templates/**",
+      "UnityProject/Packages/**",
+      "UnityProject/ProjectSettings/**",
+      "UnityProject/Assets/ApprovedReuse/**",
+      "UnityProject/Assets/Plugins/**",
+      "pre-existing cross-Lab Unity files"
+    ],
+    "foundation_owner": "user",
+    "agent_action_on_foundation_defect": "stop current gate and report; do not modify, work around, or provide replacement code",
+    "controlled_write_exception": "During new-run creation, labflow may create LabSpecs/<current_lab_id>/source-references.json exactly once from the protected catalog. During Gate 0, labflow may create BuildEvidence/<current_lab_id>/gate0-protected-baseline.json exactly once after release Boundary PASS. At any gate, automatic blocker recovery may create numbered reports under BuildEvidence/<current_lab_id>/blocker-retrospectives/ and append verified lessons to its own KnowledgeBase/rebuild-lessons/<current_lab_id>.md; completed reports, older entries and unowned files are immutable"
+  },
+  "mandatory_assets": [
+    "ApprovedAssets/EMVRRoom/Prefabs/Room_Big_Part_01.prefab",
+    "ApprovedAssets/EMVRRoom/Prefabs/Room_Big_Part_02.prefab",
+    "ApprovedAssets/EMVRRoom/Prefabs/Room_Big_Part_03.prefab",
+    "ApprovedAssets/XRInteractionToolkitSamples/Starter Assets/Prefabs/XR Interaction Setup.prefab",
+    "ApprovedAssets/XRInteractionToolkitSamples/XR Device Simulator/XR Device Simulator.prefab",
+    "ApprovedAssets/EMVRRoom/Lighting/RoomLighting.lighting"
+  ],
+  "requirements": {
+    "record_provenance": true,
+    "reuse_source_reference_catalog": "Policies/reuse-source-references.json",
+    "per_lab_source_reference_manifest": "LabSpecs/<lab_id>/source-references.json",
+    "source_reference_base": "builder_pack_root",
+    "source_reference_path_format": "repository_relative_posix",
+    "persisted_absolute_source_paths_forbidden": true,
+    "source_reference_sources_read_only": true,
+    "source_reference_manifest_hash_locked": true,
+    "source_reference_runtime_resolution_after_clone": true,
+    "generalize_conditional_code": true,
+    "validate_new_shared_code": true,
+    "ask_when_spec_is_missing": true,
+    "conversation_attachment_scope": "exact file only; never enumerate its parent directory",
+    "one_isolated_builder_pack_per_run": true,
+    "blind_rebuild_master_directory_name": "EMVR_Blind_BuilderPack",
+    "blind_rebuild_workspace_parent": "RebuildWorkspaces",
+    "blind_rebuild_workspace_name": "EMVR_Blind_Rebuild_<lab_id>",
+    "blind_rebuild_workspace_must_be_inside_builder_pack": true,
+    "blind_rebuild_workspace_creator": "rebuilding_agent",
+    "user_runs_blind_rebuild_copy_command": false,
+    "valid_matching_blind_rebuild_child_is_resumed_without_copy": true,
+    "integrated_development_workspace_location_restricted": false,
+    "approved_asset_import_destination": "UnityProject/Assets/Generated/<lab_id>/ApprovedDependencies",
+    "approved_asset_import_handles_windows_extended_paths": true,
+    "approved_asset_import_is_transactional": true,
+    "approved_asset_import_manifest_commits_last": true,
+    "approved_asset_import_preserves_unity_assembly_boundaries": true,
+    "approved_asset_manifest_may_only_expand_when_prior_records_are_unchanged": true,
+    "gate5_foundation_source": "ReusableFoundation/Gate5MinimalSlice/Source",
+    "gate5_foundation_destination": "UnityProject/Assets/Generated/<lab_id>/Gate5Foundation",
+    "gate5_foundation_materializer": ".agents/skills/build-unity-vr-lab-blind/scripts/materialize_gate5_foundation.py",
+    "gate5_foundation_source_and_copy_are_immutable": true,
+    "gate5_foundation_evidence_required": true,
+    "gate5_evidence_content_digest_required": true,
+    "gate5_foundation_and_domain_evidence_must_be_fresh_together": true,
+    "release_frozen_hashes_are_maintainer_owned": true,
+    "builder_agent_may_update_release_frozen_hashes": false,
+    "gate0_protected_baseline_command": "python Tools/labflow/labflow.py capture-gate0-baseline --lab-id <lab_id>",
+    "gate0_protected_baseline_path": "BuildEvidence/<lab_id>/gate0-protected-baseline.json",
+    "gate0_protected_baseline_requires_release_boundary_pass": true,
+    "gate0_protected_baseline_create_once": true,
+    "gate0_protected_baseline_overwrite_forbidden": true,
+    "gate0_protected_baseline_update_after_gate0_forbidden": true,
+    "maintainer_compatibility_profile": "gate4_pre_scaffold_tooling_v1",
+    "maintainer_compatibility_receipts": "BuildEvidence/<lab_id>/protected-maintenance/<sequence>.json",
+    "maintainer_compatibility_state_field": "protected_maintenance",
+    "maintainer_compatibility_preserves_original_baseline": true,
+    "maintainer_compatibility_requires_exact_old_new_hashes": true,
+    "builder_may_issue_or_modify_maintenance_receipts": false,
+    "all_gates_and_recovery_verify_gate0_protected_baseline": true,
+    "current_blocker_lesson_excluded_from_gate0_baseline": true,
+    "approved_asset_real_import_gate": 5,
+    "approved_unity_scene_import_forbidden": true,
+    "protected_foundation_is_read_only": true,
+    "foundation_defects_are_user_repaired": true,
+    "unity_mcp_enabled": false,
+    "preflight_before_lab_code": true,
+    "mandatory_reuse_matrix": ".agents/skills/build-unity-vr-lab-blind/references/mandatory-reuse-matrix.md",
+    "mandatory_room_prefab_reuse": true,
+    "mandatory_room_requires_floor_wall_and_roof_geometry": true,
+    "mandatory_verified_xr_interaction_setup_prefab": true,
+    "mandatory_verified_xr_device_simulator_prefab": true,
+    "bare_xr_origin_as_top_level_baseline_forbidden": true,
+    "verified_xr_simulator_up_down_y_binding": true,
+    "default_desktop_to_xr_equivalence": true,
+    "default_desktop_to_xr_same_target_state_feedback_and_result": true,
+    "gate1_user_mapping_input_required": false,
+    "desktop_to_xr_exception_requires_explicit_confirmation": true,
+    "copy_demo_scene_forbidden": true,
+    "primitive_room_substitution_forbidden": true,
+    "scene_builder_fail_closed": true,
+    "game_view_layout_acceptance_required": true,
+    "world_space_ui_front_face_validation_required": true,
+    "unity_handoffs_assume_zero_experience": true,
+    "unity_handoffs_require_exact_menu_and_click_paths": true,
+    "test_runner_handoff_requires_exact_assembly_tests_and_success_criteria": true,
+    "one_atomic_conversation_per_gate": true,
+    "explicit_user_approval_per_gate": true,
+    "next_gate_changes_before_approval_forbidden": true,
+    "prior_rebuild_lessons_review_required_at_gate_0": true,
+    "pre_workflow_build_experience_recommended": true,
+    "legacy_lab_specific_summaries_forbidden_by_default": true,
+    "workflow_maintenance_material_forbidden": true,
+    "gate_6_user_acceptance_required": true,
+    "automatic_blocker_retrospective_required": true,
+    "room_assembly_recipe": "Policies/emvr-room-assembly.json"
+  },
+  "workflow_model": {
+    "name": "compact_gates_v1",
+    "gate_sequence": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      8
+    ],
+    "user_acceptance_gate": 6,
+    "terminal_gate": 8,
+    "semantic_progression_is_approval": true,
+    "blocker_recovery_at_every_gate": true,
+    "blocker_recovery_requires_separate_approval": false,
+    "gate6_independent_observation_digests": true,
+    "unity_meta_in_content_digest": true,
+    "non_advancing_contract_recheck": "recheck-contracts",
+    "renewed_input_confirmation": "reconfirm-inputs",
+    "gate5_independent_domain_observation_digests": true
+  },
+  "student_manual_workflow": {
+    "gate": 8,
+    "accepted_version_gate": 6,
+    "output_root": "BuildEvidence/<lab_id>/handbooks",
+    "filename": "Lab <manual_number> <manual_title>.pdf",
+    "metadata_source": "confirmed Brief manual block and rubric.manual_assessment",
+    "number_inference_from_lab_id_forbidden": true,
+    "generation_content_layout_evidence_required": true,
+    "all_pdf_pages_must_be_reviewed": true,
+    "reference_manual_overwrite_forbidden": true,
+    "publish_to_host_requires_separate_release": true,
+    "reuse_validation_reports": "internal_evidence",
+    "developers_handbook": "required_independent_docx_and_pdf_in_8a",
+    "entry": "recorded Gate 6 user acceptance of the current verified experiment",
+    "duplicate_manual_gate_forbidden": true,
+    "formal_generation_before_acceptance_forbidden": true,
+    "reference_roles": {
+      "Lab 0 VR Lab Primers.pdf": "onboarding style only",
+      "Lab 1 Electrostatics.pdf": "student naming, structure and layout",
+      "Lab 2 Magnetostatic.pdf": "student naming, structure and layout; preserve singular filename",
+      "Lab 3 Wave Polarization.pdf": "student naming, structure and layout",
+      "EM VR Lab Development Handbook.docx": "separate developer audience and structure"
+    }
+  },
+  "gate8_handbooks": {
+    "original_gate_number": 8,
+    "ordered_steps": [
+      "8A",
+      "8B"
+    ],
+    "one_final_user_confirmation": true,
+    "8a": [
+      "student_pdf",
+      "single_lab_developer_docx",
+      "single_lab_developer_pdf"
+    ],
+    "8b": [
+      "incremented_project_master_docx",
+      "incremented_project_master_pdf",
+      "before_version",
+      "increment_change_list"
+    ],
+    "common_accepted_version_gate": 6,
+    "master_regeneration_forbidden": true,
+    "other_chapters_and_images_read_only": true,
+    "repeat_updates_tagged_current_lab_section": true,
+    "whole_pdf_page_review_required": true,
+    "developer_material_accumulation": "Gates 0-6 and resolved blockers",
+    "execution_status_labels": [
+      "executed",
+      "document_checked",
+      "pending"
+    ],
+    "master_not_a_requirement_or_reusable_code_source": true,
+    "same_gate_recovery_operations_allowed": true,
+    "recovery_requires_current_incident_verified_bundle": true,
+    "changed_accepted_version_can_supersede_incident_without_verification": true
+  },
+  "portable_room_lighting": {
+    "source": "ReusableFoundation/Gate5MinimalSlice/Source/Editor/EmVrRoomLighting.cs",
+    "import_tool": ".agents/skills/build-unity-vr-lab-blind/scripts/materialize_gate5_foundation.py",
+    "entry": "EMVR.ReusableFoundation.Gate5.Editor.EmVrRoomLighting.ForLab",
+    "lab_reimplementation_forbidden": true,
+    "source_and_import_read_only": true,
+    "test_assembly": "EMVR.ReusableFoundation.Lighting.Tests",
+    "test_count": 7
+  }
+}

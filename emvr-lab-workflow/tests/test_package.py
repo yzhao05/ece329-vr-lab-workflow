@@ -1,0 +1,436 @@
+"""Cross the public agent, course-library, static-viewer and Builder boundaries."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import shutil
+import tarfile
+from contextlib import contextmanager
+from urllib.request import ProxyHandler, build_opener
+from urllib.parse import urljoin, urlsplit
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SKILL = ROOT / "emvr-lab-workflow"
+sys.path[:0] = [str(SKILL / "design/src"), str(SKILL / "design")]
+from ece329_workflow.store import SQLiteSessionStore
+from ece329_workflow.models import DesignSession, InteractionState, WorkflowStatus, Stage
+from tools.export_emvr34_regression import completed_magnetic_engine
+
+
+def cli(tmp, *args, stdin=None, ok=True):
+    run = subprocess.run([sys.executable, str(SKILL / "scripts/workflow.py"), "--state-dir",
+        str(tmp / "private"), "--web-dir", str(tmp / "public"), *args], cwd=tmp,
+        input=json.dumps(stdin, ensure_ascii=False) if stdin is not None else None, text=True, encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True)
+    if ok:
+        assert run.returncode == 0, run.stderr
+        return json.loads(run.stdout)
+    assert run.returncode != 0
+    return run.stderr
+
+
+def viewer_command(tmp, *args):
+    result = subprocess.run([sys.executable, str(SKILL / "scripts/viewer.py"), "--state-dir",
+        str(tmp / "private"), "--web-dir", str(tmp / "public"), *args], cwd=tmp,
+        capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    return result
+
+
+@contextmanager
+def page(tmp, *target):
+    shutil.copytree(ROOT / "web", tmp / "public", ignore=shutil.ignore_patterns("data"), dirs_exist_ok=True)
+    try:
+        opened = json.loads(viewer_command(tmp, "open", "--url-only", *target).stdout)
+        yield opened
+    finally:
+        viewer_command(tmp, "close")
+
+
+def get(url, path):
+    with build_opener(ProxyHandler({})).open(urljoin(url, path), timeout=30) as response:
+        return json.load(response)
+
+
+def test_agent_flow(tmp_path, monkeypatch):
+    monkeypatch.setenv("ECE329_FEEDBACK_REASONING_EFFORT", "obsolete-offline-setting")
+    monkeypatch.setenv("PYTHONIOENCODING", "gbk")
+    created = cli(tmp_path, "create", "探索长螺线管中心的磁场与电流")
+    key = created["design_id"]
+    assert created["stage_payload"]["emvr_formula_phase"] == "FORMULA_CANDIDATES_PRESENTED"
+    assert "interpretation" not in created and "design_access_token" not in created
+    action = {"type": "SELECT_EMVR_FORMULAS", "content": {
+        "primary_profile_ids": ["FD13_CURRENT_SHEET_SOLENOID"], "primary_formula_ids": ["long_solenoid_field"]}}
+    request = {"message": "选择长螺线管内部磁场公式", "turn_id": "example-turn-1",
+               "interpretation": {"intent": "ANSWER_CURRENT_QUESTION", "confidence": 1,
+                                  "semantic_updates": {"emvr_formula_actions": [action]}}}
+    turn = cli(tmp_path, "turn", key, "--stdin-json", stdin=request)
+    saved = SQLiteSessionStore(tmp_path / "private/design.sqlite3").get(key)
+    assert saved.history[-1]["user_message"] == request["message"]
+    assert turn["revision"] > created["revision"]
+    assert turn["stage_payload"]["emvr_formula_phase"] != "FORMULA_CANDIDATES_PRESENTED"
+    assert cli(tmp_path, "turn", key, "--stdin-json", stdin=request)["revision"] == turn["revision"]
+    view = json.loads((tmp_path / "public/data" / (key + ".json")).read_text(encoding="utf-8"))
+    assert len(view["flow"]) == 7 and view["evidence"]
+    assert any(note["label"] == "已选主公式" for note in view["notes"])
+    assert set(view) == {"design_id", "revision", "flow", "builder", "evidence", "notes", "check"}
+    assert "确认" in cli(tmp_path, "export", key, ok=False)
+    assert not (tmp_path / "private/handoffs").exists()
+
+
+def test_directory_publication_retries_a_windows_lock(tmp_path, monkeypatch):
+    sys.path.insert(0, str(SKILL / "scripts"))
+    import workspace
+    staged, target = tmp_path / "staged", tmp_path / "published"
+    staged.mkdir()
+    (staged / "ready.txt").write_text("ready")
+    rename = Path.rename
+    attempts = []
+
+    def briefly_locked(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            error = PermissionError("directory temporarily locked")
+            error.winerror = 5
+            raise error
+        return rename(source, destination)
+
+    monkeypatch.setattr(Path, "rename", briefly_locked)
+    workspace.publish_directory(staged, target)
+    assert attempts == [target, target]
+    assert (target / "ready.txt").read_text() == "ready"
+
+
+def test_finished_handoff(tmp_path):
+    _, session = completed_magnetic_engine()
+    session._store_snapshot = None
+    SQLiteSessionStore(tmp_path / "private/design.sqlite3").save(session)
+    key = session.design_id
+    exported = cli(tmp_path, "export", key)
+    bundle = Path(exported["artifacts"])
+    assert all((bundle / filename).read_bytes().startswith(b"%PDF") for filename in
+               ("design.pdf", "builder-gate1-input.pdf"))
+    (bundle / "design.pdf").unlink()
+    assert cli(tmp_path, "export", key)["artifacts"] == str(bundle)
+    assert (bundle / "design.pdf").read_bytes().startswith(b"%PDF")
+    # A user may keep notes next to the PDFs. Only the approved handoff goes to Builder.
+    (bundle / "personal-notes.txt").write_text("not part of the design")
+    result = cli(tmp_path, "builder-init", key)
+    pack = Path(result["builder_workspace"])
+    lab_id = "ece329_solenoid_regression"
+    inputs = pack / "LabSpecs" / lab_id / "design-input"
+    assert Path(result["builder_inputs"]) == inputs
+    if os.name == "nt":
+        assert str(pack).startswith("\\\\?\\")
+    assert 'language: "简体中文"' in (inputs.parent / "brief.yaml").read_text(encoding="utf-8")
+    expected = {"design.pdf", "builder-gate1-input.pdf", "builder-gate1-input.json"}
+    assert {f.name for f in inputs.iterdir()} == expected
+    assert all((inputs / name).read_bytes() == (bundle / name).read_bytes() for name in expected)
+    assert (pack / "UnityProject/LocalPackages/com.emvr.lab-common/package.json").is_file()
+    assert not (pack / "KnowledgeBase/legacy-lab-specific-summaries").exists()
+    assert cli(tmp_path, "show", key)["builder"]["current_gate"] == 0
+    assert cli(tmp_path, "builder-init", key)["builder_workspace"] == str(pack)
+
+
+    # Simulate an external labflow approval in this isolated test project.
+    # Only an HTTP read follows it; the agent does not run show or write a snapshot.
+    with page(tmp_path, key) as opened:
+        url = opened["url"]
+        published = tmp_path / "public/data" / (key + ".json")
+        old_view = json.loads(published.read_text(encoding="utf-8"))
+        old_view["check"].pop("details")
+        old_view["flow"][0].pop("steps")
+        published.write_text(json.dumps(old_view), encoding="utf-8")
+        restored = get(url, f"data/{key}.json")
+        assert len(restored["flow"][0]["steps"]) == 7
+        assert "feasibility" in restored["check"]["details"]
+        assert restored["builder"]["current_gate"] == 0
+        state_file = pack / "LabSpecs" / lab_id / "workflow_state.json"
+        working = json.loads(state_file.read_text(encoding="utf-8"))
+        # Approvals from the retired Gate 6 and 8 definitions are insufficient
+        # for user acceptance and handbooks in the current Builder.
+        working["gate_approvals"] = {str(n): {"approved": True} for n in (0, 6, 8)}
+        state_file.write_text(json.dumps(working), encoding="utf-8")
+        progress = get(url, f"data/{key}.json")["builder"]
+        assert progress["current_gate"] == 1 and progress["approved_gates"] == [0]
+        saved = json.loads((tmp_path / "public/data" / (key + ".json")).read_text(encoding="utf-8"))
+        assert saved["builder"] == progress
+        # Interrupted handoff and stale snapshots must reconcile against the
+        # current design fingerprint, even without another CLI show.
+        path = tmp_path / "public/data" / (key + ".json")
+        saved["builder"] = None
+        path.write_text(json.dumps(saved), encoding="utf-8")
+        assert get(url, f"data/{key}.json")["builder"] == progress
+        marker = tmp_path / "private/runs" / key / "active.json"
+        original = marker.read_bytes()
+        marker.unlink()
+        assert get(url, f"data/{key}.json")["builder"] is None
+        marker.write_bytes(original)
+        assert get(url, f"data/{key}.json")["builder"] == progress
+    with page(tmp_path, "--builder-workspace", str(pack), "--lab-id", lab_id) as standalone:
+        value = get(standalone["url"], "_session/" + standalone["viewer_session"])
+        assert value["standalone"] is True and value["builder"]["current_gate"] == 1
+        assert "workspace" not in value and "design_id" not in value
+
+
+def test_viewer_ignores_reused_port_with_non_viewer_json(monkeypatch):
+    import io
+    from unittest.mock import Mock
+    sys.path.insert(0, str(SKILL / "scripts"))
+    import viewer
+    opener = Mock()
+    opener.open.return_value = io.BytesIO(b"[]")
+    monkeypatch.setattr(viewer, "build_opener", lambda *_: opener)
+    assert viewer.running_url({"instance": "previous-worker", "port": 12345}) is None
+
+
+def test_published_builder_snapshot_survives_without_its_private_session(tmp_path):
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from viewer import live_design
+    state, web = tmp_path / "private", tmp_path / "public"
+    published = web / "data/example.json"
+    published.parent.mkdir(parents=True)
+    view = {"revision": 4, "builder_source_fingerprint": "approved-design",
+            "builder": {"current_gate": 5}, "check": {"details": {}, "builder_ready": True}}
+    original = json.dumps(view).encode()
+    published.write_bytes(original)
+    for with_database in (False, True):
+        if with_database:
+            SQLiteSessionStore(state / "design.sqlite3")
+        assert live_design(state, web, "example") == view
+        assert published.read_bytes() == original
+
+
+def test_open_first_and_bind_only_this_design(tmp_path):
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from viewer import instance_file
+    marker = instance_file(tmp_path / "private", (tmp_path / "public").resolve())
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{", encoding="utf-8")
+    with page(tmp_path, "--new") as opened:
+        url, token = opened["url"], opened["viewer_session"]
+        assert get(url, "_session/" + token) == {"design_id": None}
+        # Upgrade a live previous-protocol registration without invalidating
+        # the URL that the host has already opened.
+        marker = next((tmp_path / "private/viewer").glob("*.json"))
+        info = json.loads(marker.read_text(encoding="utf-8"))
+        info.pop("protocol")
+        temp = marker.with_suffix(".new")
+        temp.write_text(json.dumps(info), encoding="utf-8")
+        temp.replace(marker)
+        same_server = json.loads(viewer_command(tmp_path, "open", "--url-only").stdout)
+        assert urlsplit(same_server["url"]).netloc == urlsplit(url).netloc
+        assert get(url, "_instance")["instance"] != info["instance"]
+        assert len(get(url, "stages.json")["design"]) == 7
+        key = cli(tmp_path, "create", "线圈电流和磁场", "--viewer-session", token)["design_id"]
+        assert get(url, "_session/" + token) == {"design_id": key}
+        assert cli(tmp_path, "create", "重试", "--viewer-session", token)["design_id"] == key
+        # A process can commit a turn to SQLite and exit before publishing its snapshot.
+        published = tmp_path / "public/data" / (key + ".json")
+        old_snapshot = published.read_bytes()
+        turn = cli(tmp_path, "turn", key, "--message", "请解释当前的公式")
+        published.write_bytes(old_snapshot)
+        assert get(url, f"data/{key}.json")["revision"] == turn["revision"]
+        assert json.loads(published.read_bytes())["revision"] == turn["revision"]
+        other = cli(tmp_path, "create", "传播方向")["design_id"]
+        assert other != key and get(url, "data/latest.json")["design_id"] == other
+        assert get(url, "_session/" + token) == {"design_id": key}
+
+
+def test_unity_tarball_matches_builder_package():
+    pack = ROOT / "reusable-code/EMVR_Blind_BuilderPack/UnityProject"
+    source = pack / "LocalPackages/com.emvr.lab-common"
+    manifest = json.loads((source / "package.json").read_text(encoding="utf-8"))
+    unity = json.loads((pack / "Packages/manifest.json").read_text(encoding="utf-8"))
+    assert unity["dependencies"][manifest["name"]] == "file:../LocalPackages/" + manifest["name"]
+    file = ROOT / "unity-package" / (manifest["name"] + "-" + manifest["version"] + ".tgz")
+    with tarfile.open(file) as archive:
+        expected = {"package/" + p.relative_to(source).as_posix(): p for p in source.rglob("*") if p.is_file()}
+        assert set(archive.getnames()) == set(expected)
+        assert all(archive.extractfile(name).read() == path.read_bytes() for name, path in expected.items())
+
+
+def test_knowledge_inputs():
+    catalog = json.loads((ROOT / "knowledge/catalog.json").read_text(encoding="utf-8"))
+    for name, rel in catalog.items():
+        if name != "base":
+            assert not Path(rel).is_absolute() and (ROOT / rel).is_dir()
+    course = ROOT / catalog["course"]
+    lecture = json.loads((course / "source_manifest.json").read_text(encoding="utf-8"))
+    books = json.loads((course / "supplemental_sources.json").read_text(encoding="utf-8"))["sources"]
+    for filename, expected in [(lecture["source_filename"], lecture["sha256"]),
+                               *((book["local_filename"], book["sha256"]) for book in books)]:
+        with (ROOT / catalog["sources"] / filename).open("rb") as source:
+            assert hashlib.file_digest(source, "sha256").hexdigest() == expected.lower()
+
+
+def test_new_library_documents_are_immediately_searchable(tmp_path):
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from library import copy_builder_references, search
+    catalog = json.loads((ROOT / "knowledge/catalog.json").read_text(encoding="utf-8"))
+    for key, rel in catalog.items():
+        if key != "base":
+            (tmp_path / rel).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "knowledge/catalog.json").write_text(json.dumps(catalog))
+    for area in ("design", "builder", "shared"):
+        (tmp_path / catalog[area + "_additions"] / "notes.md").write_text("isolated-needle", encoding="utf-8")
+    (tmp_path / catalog["updates"] / "review.md").write_text("isolated-needle", encoding="utf-8")
+    archive_doc = catalog["builder_archive"] + "/reusable.md"
+    (tmp_path / archive_doc).write_text("conditional-category-b", encoding="utf-8")
+    for scope in ("builder", "all"):
+        assert search(tmp_path, "conditional-category-b", scope)["documents"][0]["path"] == archive_doc
+    assert not search(tmp_path, "conditional-category-b", "design")["documents"]
+    for scope in ("design", "builder"):
+        found = search(tmp_path, "isolated-needle", scope)["documents"]
+        assert {row["path"] for row in found} == {
+            catalog["updates"] + "/review.md", catalog[scope + "_additions"] + "/notes.md", catalog["shared_additions"] + "/notes.md"}
+    update = tmp_path / catalog["updates"] / "review.md"
+    update.write_text("solenoid overview\nsolenoid calibration", encoding="utf-8")
+    for index in range(31):
+        (tmp_path / catalog["builder_lessons"] / f"note{index}.md").write_text("solenoid")
+    hits = search(tmp_path, "solenoid calibration", "builder")["documents"]
+    assert hits[0] == {"path": catalog["updates"] + "/review.md", "line": 2, "excerpt": "solenoid calibration"}
+    pack = tmp_path / "isolated-run"
+    copy_builder_references(tmp_path, pack)
+    assert {path.relative_to(pack).as_posix() for path in pack.rglob("*.md")} == {
+        "KnowledgeBase/extensions/newknowledge/review.md", "KnowledgeBase/extensions/shared/notes.md", "KnowledgeBase/extensions/builder/notes.md"}
+
+def test_archived_guided_design_opens_from_store_without_builder_approval(tmp_path):
+    key = "historic_guided"
+    store = SQLiteSessionStore(tmp_path / "private/design.sqlite3")
+    session = DesignSession(key, InteractionState.GUIDED_DESIGN, status=WorkflowStatus.COMPLETE,
+                            current_stage_index=len(Stage)-1, revision=5,
+                            design_context={"idea": {"original": "磁场测量"}, "synthesis": {"student_summary": "比较磁场方向"}})
+    session.stage_outputs[session.current_stage.value] = {"revision": 3, "assistant_message": "已记录总结"}
+    store.save(session)
+    with page(tmp_path, key) as opened:
+        view = get(opened["url"], f"data/{key}.json")
+        assert view["check"]["archived"] and not view["check"]["builder_ready"]
+        assert view["notes"][-1]["value"] == "比较磁场方向" and view["builder"] is None
+    shown = cli(tmp_path, "show", key)
+    assert shown["revision"] == 5 and shown["workflow_status"] == "complete"
+    assert "student_task" not in shown and "assistant_message" not in shown
+    for command in ("export", "builder-init"):
+        assert "历史设计已归档" in cli(tmp_path, command, key, ok=False)
+    assert store.get(key).interaction_state is InteractionState.GUIDED_DESIGN
+
+
+def test_host_feedback_reaches_later_turn(tmp_path):
+    from tests.test_feedback_pipeline import candidate, review_note
+    key = cli(tmp_path, "create", "磁场")["design_id"]
+    args = ("feedback", key, "--submit")
+    ticket = cli(tmp_path, *args, stdin={"request_id": "example-feedback", "message": "已经回答"})
+    process = ("feedback-process", "--ticket", ticket["id"])
+    assert cli(tmp_path, *process)["ticket"]["id"] == ticket["id"]
+    proposal = candidate(keywords=["磁场"])
+    path = tmp_path / "candidate.json"
+    path.write_text(json.dumps({"ticket_id": ticket["id"], "candidate": proposal}))
+    analyzed = cli(tmp_path, *process, "--candidate", str(path))
+    assert analyzed["status"] == "candidate"
+    identity = analyzed["experience"]["id"]
+    from ece329_workflow.experience import ExperienceStore
+    store = ExperienceStore(tmp_path / "private/design.sqlite3")
+    version = store.experiences(experience_id=identity)[0]["version"]
+    cli(tmp_path, "experience-review", identity, stdin={
+        "decision":"approve", "version":version, "note":review_note(proposal)})
+    later = cli(tmp_path, "turn", key, "--message", "磁场")
+    assert any(rule["id"] == "EXP-" + identity for rule in later["experience_rules"])
+    assert "Gate 8" in cli(tmp_path, "retrospective", key, "--notes", str(path), ok=False)
+
+
+def test_export_host_language_and_switch(tmp_path):
+    import re
+    _, session = completed_magnetic_engine()
+    session._store_snapshot = None
+    session.model_context["response_language"] = "en"
+    SQLiteSessionStore(tmp_path / "private/design.sqlite3").save(session)
+    key = session.design_id
+    request = cli(tmp_path, "export", key)
+    assert request["language"] == "en" and request["translation_required"]
+    path = tmp_path / "en.json"
+    # Transport double: keep numeric, code and formula references intact.
+    path.write_text(json.dumps({s: re.sub(r"[\u3400-\u9fff]+", "sample", s) for s in request["translations"]}))
+    done = cli(tmp_path, "export", key, "--translations", str(path))
+    assert (Path(done["artifacts"]) / "design.pdf").read_bytes().startswith(b"%PDF")
+    contract = Path(done["artifacts"]) / "builder-gate1-input.json"
+    approved = contract.read_bytes()
+    contract.unlink()
+    assert cli(tmp_path, "export", key)["artifacts"] == done["artifacts"]
+    assert contract.read_bytes() == approved
+    zh = cli(tmp_path, "export", key, "--language", "zh")
+    if zh.get("translation_required"):
+        path.write_text(json.dumps({s: "译文 " + s for s in zh["translations"]}))
+        zh = cli(tmp_path, "export", key, "--language", "zh", "--translations", str(path))
+    assert Path(done["artifacts"]) != Path(zh["artifacts"])
+    assert (Path(zh["artifacts"]) / "builder-gate1-input.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_gate5b_archive_bound_to_acceptance(tmp_path, monkeypatch):
+    sys.path.insert(0, str(SKILL / "scripts"))
+    import code_archive
+    pack = tmp_path / "pack"
+    owned = pack / "UnityProject/Assets/Scripts/Lab.cs"
+    owned.parent.mkdir(parents=True)
+    owned.write_text("class Scaffold {}")
+    status = {"current_gate":5,"accepted":False,"approved_gates":[],
+              "evidence":{"gate5_foundation":"passed","compile_content_digest":"a"*64}}
+    monkeypatch.setattr(code_archive, "labflow", lambda *args: json.dumps(status))
+    out = tmp_path / "newcode"
+    def run(action, *files):
+        return code_archive.archive(pack, "course_lab", action, files, out)
+    run("begin")
+    import pytest
+    with pytest.raises(ValueError):
+        run("capture", "Scripts/Lab.cs")
+    owned.write_text("class Lab {}")
+    run("capture", r"Scripts\Lab.cs")
+    with pytest.raises(ValueError):
+        run("publish")
+    status.update(current_gate=8, accepted=True, approved_gates=[0,1,2,3,4,5,6])
+    rename = Path.rename
+    attempts = []
+
+    def briefly_locked(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            error = PermissionError("accepted code directory temporarily locked")
+            error.winerror = 32
+            raise error
+        return rename(source, destination)
+
+    monkeypatch.setattr(Path, "rename", briefly_locked)
+    result = run("publish")
+    assert len(attempts) == 2
+    assert (Path(result["archive"]) / "Scripts/Lab.cs").read_text() == "class Lab {}"
+    copy = Path(result["archive"]) / "Scripts/Lab.cs"
+    copy.unlink()
+    assert run("publish") == result
+    assert copy.read_bytes() == owned.read_bytes()
+    status.clear()
+    status.update(migration_required=True, current_gate=None)
+    with pytest.raises(ValueError, match="legacy"):
+        run("publish")
+
+def test_completed_retrospective_is_written_and_searchable(tmp_path, monkeypatch):
+    sys.path.insert(0, str(SKILL / "scripts"))
+    import workflow
+    _, session = completed_magnetic_engine()
+    session._store_snapshot = None
+    SQLiteSessionStore(tmp_path / "private/design.sqlite3").save(session)
+    shutil.copytree(ROOT / "knowledge", tmp_path / "knowledge", ignore=shutil.ignore_patterns("*.pdf"))
+    monkeypatch.setattr(workflow, "ROOT", tmp_path)
+    monkeypatch.setattr(workflow, "active_builder", lambda state, key, fingerprint: {
+        "workflow_complete":True, "accepted":True, "source_fingerprint":fingerprint})
+    notes = tmp_path / "notes.md"
+    notes.write_text("Design: solenoid. Builder: verify recap-current.", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["workflow", "--state-dir", str(tmp_path / "private"),
+        "--web-dir", str(tmp_path / "web"), "retrospective", session.design_id, "--notes", str(notes)])
+    record = workflow.main()["knowledge_update"]
+    assert record.startswith("knowledge/newknowledge/")
+    assert (tmp_path / record).read_text(encoding="utf-8").strip() == notes.read_text(encoding="utf-8")
+    assert workflow.main()["knowledge_update"] == record
+    for scope in ("design", "builder"):
+        assert workflow.search(tmp_path, "recap-current", scope)["documents"][0]["path"] == record
