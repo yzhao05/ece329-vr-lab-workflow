@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using UnityEngine.XR.Interaction.Toolkit.UI;
 
 namespace EMVR.ReusableFoundation.Gate5.Tests
 {
@@ -63,9 +64,9 @@ namespace EMVR.ReusableFoundation.Gate5.Tests
         public void PersistentButtonSpawnsActiveVisibleCollidableObject()
         {
             EmVrGate5FoundationHarness harness = CreateHarness(out _);
-            EmVrGate5FoundationSceneUtility.AddEditorAndRuntimePersistentListener(
-                harness.spawnButton,
-                harness.SpawnAndValidate);
+            Canvas canvas = harness.spawnButton.GetComponentInParent<Canvas>();
+            Assert.That(canvas.GetComponent<GraphicRaycaster>(), Is.Not.Null);
+            Assert.That(canvas.GetComponent<TrackedDeviceGraphicRaycaster>(), Is.Not.Null);
 
             Assert.That(harness.TryValidateWiring(out string wiringFailure), Is.True, wiringFailure);
             Assert.That(
@@ -114,19 +115,14 @@ namespace EMVR.ReusableFoundation.Gate5.Tests
 
             GameObject canvasObject = NewObject("Canvas", typeof(RectTransform), typeof(Canvas));
             Canvas canvas = canvasObject.GetComponent<Canvas>();
-            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            GameObject buttonObject = NewObject(
-                "Spawn Button",
-                typeof(RectTransform),
-                typeof(CanvasRenderer),
-                typeof(Image),
-                typeof(Button));
-            buttonObject.transform.SetParent(canvasObject.transform, false);
-            Button button = buttonObject.GetComponent<Button>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.worldCamera = camera;
 
             GameObject harnessObject = NewObject("Foundation Harness");
             EmVrGate5FoundationHarness harness = harnessObject.AddComponent<EmVrGate5FoundationHarness>();
-            harness.spawnButton = button;
+            harness.spawnButton = EmVrGate5FoundationSceneUtility.CreatePersistentButton(
+                (RectTransform)canvas.transform, Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"),
+                "Spawn Button", "Spawn", Vector2.zero, harness.SpawnAndValidate);
             harness.replacementSpawner = spawner;
             harness.validationCamera = camera;
             return harness;

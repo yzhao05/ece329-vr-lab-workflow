@@ -4,6 +4,8 @@
 
 已经安装过？直接看[用 Git 更新](#update-git)或[用 ZIP 更新](#update-zip)。
 
+只做实验设计、导出 PDF 或在网页查看已导出的 3D 场景，都可以跳过 Unity 安装。要实际搭建实验，Builder 到 Gate 4 时需要用 Unity 编辑器编译 C# 脚本。首次搭建请看[下载安装 Unity 并检查编译](#install-unity)。
+
 这份教程以“电流如何影响长螺线管中心的磁场”为例，带你从下载项目走到拿到设计 PDF，再按需进入 Unity 构建。首次使用完成第 1～3 步；以后从第 4 步开始。第 3 步只选你使用的一款桌面客户端。
 
 ## 1. 下载项目，打开正确的文件夹
@@ -164,7 +166,36 @@ Windows 下请从 Unity Hub 打开 Agent 给出的短路径（例如 `Z:\UnityPr
 
 1. **沿用刚完成的设计**：在原聊天说“用刚确认并导出的这版方案开始搭建”。核对 Agent 报出的设计版本、Builder 工作区和当前 Gate（构建关卡）。
 2. **已经有自己的方案**：直接从第 3 步配置好的项目开始，把目标文件附到聊天里，指明版本，说“只用附件这一版直接进入 Builder”。Agent 会从这份方案开始核对需求；有多个版本时先让它确认选中了哪一份。
-3. 在每个 Gate 阅读已验证的内容和待确认事项。需要修改就指出具体项，接受当前结果后再确认。需要你在 Unity 中查看时，用 Unity Hub 打开 Agent 给出的运行工作区里的 `UnityProject`，按照当关要求操作。Gate 6 场景验收后，Agent 归档选定的 Gate 5B 源码；关联设计的两本手册在 Gate 8 获批后，Agent 把问题和解决办法写入[新增知识库](knowledge/newknowledge/)。
+3. 在每个 Gate 阅读已验证的内容和待确认事项。需要修改就指出具体项，接受当前结果后再确认。需要你在 Unity 中查看时，用 Unity Hub 打开 Agent 给出的运行工作区里的 `UnityProject`，按照当关要求操作。Gate 6 场景验收后，Agent 归档选定的 Gate 5B 源码；关联设计的学生手册、单实验开发者手册及项目总手册增补在 Gate 8 一并获批后，Agent 把问题和解决办法写入[新增知识库](knowledge/newknowledge/)。
+
+<a id="install-unity"></a>
+
+### 首次搭建：下载安装 Unity 并检查编译
+
+1. **安装 Unity Hub。** 打开 Unity 下载页，选择你的操作系统，运行下载的安装程序。启动 Hub，用 Unity ID 登录。如果提示缺少许可证，在 **Settings（设置）→ Licenses（许可证）** 中激活你有权使用的许可证。[Unity Hub 官方下载](https://unity.com/download)
+2. **安装项目使用的编辑器。** 本仓库的 Builder 工程指定 **2022.3.62f3c1**，末尾包含 `c1`。在 Hub 的 **Installs（安装）** 页查看已装版本。已有这个完整版本就进入下一步，否则点 **Install Editor（安装编辑器）** 查找该版本。如果列表中找不到，Windows 64 位用户可以下载下面的 Unity 官方安装程序。安装完成后，在 Hub 的 **Installs → Locate（定位）** 中选择刚安装的 `Editor\Unity.exe`，确认列表显示完整版本号。[项目版本记录](reusable-code/EMVR_Blind_BuilderPack/UnityProject/ProjectSettings/ProjectVersion.txt) · [Windows 64 位编辑器安装程序](https://download.unitychina.cn/download_unity/1623fc0bbb97/Windows64EditorInstaller/UnitySetup64-2022.3.62f3c1.exe)
+3. **在 Gate 4 打开本次实验。** 等 Agent 告知脚手架已生成，在 Hub 选 **Projects（项目）→ Add → Add project from disk**，选择 Agent 给出的 `UnityProject` 文件夹。Windows 用户使用它给出的短路径，例如 `Z:\UnityProject`。选中项目并用上述版本打开。[Unity Hub 项目操作说明](https://docs.unity.com/en-us/hub/projects-window-reference)
+4. **核对编译结果。** 保持编辑模式，等待资源导入和 C# 自动编译结束，打开 **Window → General → Console**。如果红色错误数为 0，把结果告诉 Agent，继续 Gate 4 验收。如果有错误，把第一条红色错误的完整文字发给 Agent。此步无需点击 Play 或打包应用。
+
+### 首次配置 Unity 的语言和脚本编辑器
+
+1. 第一次打开 Hub 时，选择 **Create account** 注册自己的 Unity ID，或用已有账号登录。需要中文界面时，在 Hub 的 **Settings → Appearance → Language** 中选择 **简体中文**。
+2. Windows 用户如果需要阅读、修改或调试 C# 脚本，可以安装 Visual Studio。打开 **Visual Studio Installer**，选择 **安装**（已有安装则选 **修改**），在 **工作负载** 中勾选 **使用 Unity 的游戏开发**，然后应用更改。[微软安装指南](https://learn.microsoft.com/en-us/visualstudio/gamedev/unity/get-started/getting-started-with-visual-studio-tools-for-unity?pivots=windows)
+3. 打开 Unity 工程后，在编辑器选择 **Edit → Preferences → External Tools**，将 **External Script Editor** 设为已安装的 Visual Studio。双击一个 C# 脚本，确认它在 Visual Studio 中打开。
+
+### 设置 VR 插件和设备模拟器
+
+Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A 按 Agent 的指引核对场景中的 XR 装置和模拟器。下面的手动安装步骤适用于你自己新建的 Unity 2022.3 工程。[Builder 的 Gate 5A 规程](reusable-code/EMVR_Blind_BuilderPack/README_USER.md)
+
+1. 打开 **Edit → Project Settings → XR Plug-in Management**。首次配置时，点击 **Install XR Plug-in Management**（如有提示）。选择目标平台的标签页，启用 **OpenXR**。
+2. 进入 **XR Plug-in Management → OpenXR**，在 **Interaction Profiles** 列表点击 **+**，添加目标设备对应的交互配置。原教程以 **Microsoft Hand Interaction Profile** 为例；请按实际手柄或手部追踪设备选择。
+3. 打开 **Window → Package Manager**，从 **Unity Registry** 找到 **XR Interaction Toolkit**。要复现本仓库配置，选择 **2.6.5**。在该包的 **Samples** 标签页，分别点击 **Starter Assets** 和 **XR Device Simulator** 旁的 **Import**。[Builder 工程依赖](reusable-code/EMVR_Blind_BuilderPack/UnityProject/Packages/manifest.json)
+4. 如果要在自己的工程里用键鼠模拟头显和手柄，可在 **Edit → Project Settings → XR Interaction Toolkit** 中启用 **Use XR Device Simulator in scenes**。Builder 的基础场景已经按 Gate 5A 放置模拟器时，保持自动添加选项关闭，以免出现两个模拟器。
+
+### Unity 安装或打开工程时遇到问题
+
+- **Hub 一直排队或提示下载校验失败**。先在 Hub 的下载列表查看失败项。若只有语言包失败，可先完成编辑器安装，再补装语言包。若编辑器本身反复失败，Windows 用户可以使用上面的独立安装程序，再用 **Installs → Locate** 登记。
+- **打开工程时提示 `contains a locked Library`**。先关闭已打开该工作区的 Unity 编辑器，确认相关进程已退出，再从 Hub 重试。如果是解压得到的工程且仍提示锁定，关闭编辑器，把该工程里的 `Library` 改名为 `Library.backup`，重新打开并等待 Unity 重建导入缓存。保留 `Assets`、`Packages` 和 `ProjectSettings`。
 
 <a id="在自己的-unity-工程中导入-common-包"></a>
 

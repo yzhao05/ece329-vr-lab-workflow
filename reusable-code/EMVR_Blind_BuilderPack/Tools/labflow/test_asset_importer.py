@@ -22,6 +22,14 @@ SPEC.loader.exec_module(IMPORTER)
 
 
 class ApprovedAssetImporterTests(unittest.TestCase):
+    def test_unreadable_prefab_cannot_be_committed_as_an_empty_closure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefab = Path(directory) / "XR Device Simulator.prefab"
+            prefab.write_text("m_DeviceSimulatorActionAsset: {}", encoding="utf-8")
+            with mock.patch("builtins.open", side_effect=PermissionError("locked")):
+                with self.assertRaisesRegex(RuntimeError, "Cannot read approved dependency"):
+                    IMPORTER.read_guids(prefab)
+
     @staticmethod
     def write_gate_five_state(root: Path, lab_id: str) -> None:
         state = {

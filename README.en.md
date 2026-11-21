@@ -4,6 +4,8 @@
 
 Already installed? Go to [update a Git clone](#update-git) or [update a ZIP download](#update-zip).
 
+You can design an experiment, export PDFs and view an already exported 3D scene in the browser without installing Unity. To build the experiment, you will need the Unity Editor at Builder Gate 4 to compile the C# scripts. For your first build, see [install Unity and check compilation](#install-unity).
+
 Follow one example from start to finish: how does current affect the magnetic field at the center of a long solenoid? You will set up the project, discuss the experiment with an agent, export the design, and optionally build it in Unity. Complete steps 1–3 once. On later visits, start at step 4. In step 3, follow only the instructions for your desktop app.
 
 ## 1. Download the project and open its folder
@@ -164,7 +166,36 @@ On Windows, open the short project path returned by the agent in Unity Hub (for 
 
 1. **For the design you just finished**, say “Start building from the version I just confirmed and exported.” Check the design version, Builder workspace, and current gate reported by the agent.
 2. **If you already have a plan**, you can come straight here after step 3. Attach your chosen plan to the project chat, identify the version, and say “Go directly to Builder using this attachment.” The agent reviews the requirements in that plan. If there are several versions, confirm which one to use.
-3. At each gate, review the evidence and anything awaiting your decision. Request a specific change or confirm the result. When asked to inspect the scene, use Unity Hub to open `UnityProject` in the run workspace identified by the agent and follow that gate's instructions. After Gate 6 scene acceptance, the agent archives the selected Gate 5B code. After both Gate 8 handbooks are approved for a linked design, it records problems and fixes in the [knowledge updates directory](knowledge/newknowledge/).
+3. At each gate, review the evidence and anything awaiting your decision. Request a specific change or confirm the result. When asked to inspect the scene, use Unity Hub to open `UnityProject` in the run workspace identified by the agent and follow that gate's instructions. After Gate 6 scene acceptance, the agent archives the selected Gate 5B code. After the student manual, single-lab developer handbook and project handbook update receive joint Gate 8 approval for a linked design, it records problems and fixes in the [knowledge updates directory](knowledge/newknowledge/).
+
+<a id="install-unity"></a>
+
+### First build: install Unity and check compilation
+
+1. **Install Unity Hub.** Open the Unity download page, select your operating system and run the installer. Start the Hub and sign in with your Unity ID. If prompted for a license, open **Settings → Licenses** and activate the license you are entitled to use. [Download Unity Hub](https://unity.com/download)
+2. **Install the project's Editor version.** The Builder project specifies **2022.3.62f3c1**, including the `c1` suffix. Check **Installs** in the Hub. If that exact version is already installed, continue to the next step. Otherwise, select **Install Editor** and look for it. If it is missing from the list on 64-bit Windows, download and run Unity's installer linked below. Then use **Installs → Locate** to select the installed `Editor\Unity.exe` and verify the full version in the list. [Project version](reusable-code/EMVR_Blind_BuilderPack/UnityProject/ProjectSettings/ProjectVersion.txt) · [Windows 64-bit Editor installer](https://download.unitychina.cn/download_unity/1623fc0bbb97/Windows64EditorInstaller/UnitySetup64-2022.3.62f3c1.exe)
+3. **Open your experiment at Gate 4.** Once the agent reports that the scaffold is ready, choose **Projects → Add → Add project from disk** in the Hub. Select the `UnityProject` folder the agent gave you for this run. On Windows, use the short path it provides, such as `Z:\UnityProject`. Open the project with the Editor version above. [Unity Hub project instructions](https://docs.unity.com/en-us/hub/projects-window-reference)
+4. **Check compilation.** Stay in Edit mode and wait for asset import and automatic C# compilation to finish. Open **Window → General → Console**. If the red error count is zero, report that result to the agent to continue Gate 4 acceptance. If there are errors, send the agent the full text of the first red error. You can leave Play and Build unused for this check.
+
+### Set up the Hub language and C# editor
+
+1. When you first open the Hub, select **Create account** to register your own Unity ID, or sign in with an existing account. To change the interface language, open **Settings → Appearance → Language** and choose your preferred language.
+2. On Windows, install Visual Studio if you want to read, edit or debug C# scripts there. Open **Visual Studio Installer**, select **Install** (or **Modify** for an existing installation), select **Game development with Unity** under **Workloads**, and apply the change. [Microsoft installation guide](https://learn.microsoft.com/en-us/visualstudio/gamedev/unity/get-started/getting-started-with-visual-studio-tools-for-unity?pivots=windows)
+3. With the project open in Unity, choose **Edit → Preferences → External Tools** and set **External Script Editor** to your Visual Studio installation. Double-click a C# script to check that it opens in Visual Studio.
+
+### Set up VR plug-ins and the device simulator
+
+The Builder workspace includes its XR settings. When using Builder, follow the agent's Gate 5A instructions to check the XR rig and simulator in the scene. Use the following manual setup for a Unity 2022.3 project you create yourself. [Builder Gate 5A procedure](reusable-code/EMVR_Blind_BuilderPack/README_USER.md)
+
+1. Open **Edit → Project Settings → XR Plug-in Management**. Select **Install XR Plug-in Management** if prompted. Choose the tab for your target platform and enable **OpenXR**.
+2. Under **XR Plug-in Management → OpenXR**, select **+** in **Interaction Profiles** and add the profile for the target device. The original tutorial uses **Microsoft Hand Interaction Profile** as an example. Choose the profile for the controllers or hand tracking you intend to use.
+3. Open **Window → Package Manager** and find **XR Interaction Toolkit** in the **Unity Registry**. Select **2.6.5** to match the Builder project. On the package's **Samples** tab, click **Import** next to **Starter Assets** and **XR Device Simulator**. [Builder project dependencies](reusable-code/EMVR_Blind_BuilderPack/UnityProject/Packages/manifest.json)
+4. To simulate a headset and controllers with a mouse and keyboard in your own project, enable **Use XR Device Simulator in scenes** under **Edit → Project Settings → XR Interaction Toolkit**. In a Builder scene where Gate 5A already places a simulator, leave automatic insertion off to avoid creating a second one.
+
+### Troubleshoot Unity installation and project import
+
+- **Hub downloads stay queued or fail validation.** Check which item failed in the Hub download list. If only a language pack failed, finish installing the Editor and add the language pack later. If the Editor download repeatedly fails on Windows, use the standalone installer above and register it through **Installs → Locate**.
+- **Unity reports `contains a locked Library`.** Close the Editor instance using that workspace, verify its process has exited, and retry from the Hub. If the project came from an archive and the lock persists, close the Editor, rename the project's `Library` directory to `Library.backup`, then reopen it and let Unity rebuild its import cache. Keep `Assets`, `Packages` and `ProjectSettings` in place.
 
 ## 7. Import the Common package into your own Unity project (optional)
 

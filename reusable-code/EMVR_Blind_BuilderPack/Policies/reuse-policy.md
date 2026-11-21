@@ -277,7 +277,7 @@ Do not introduce an agent-written exception file that bypasses these checks.
 | Runtime ray tuning | One Common `EmVrXrRayRuntimeTuner`: radius 0.06, minimum distance 20, controller rays only true, mouse-left debug selection false. Its existing Start/Update applies these; do not persist editor ray overrides into the rig. |
 | Desktop interaction | One Common `EmVrMousePointer` on external Systems group, `showPointerRay=false`. Keep desktop behavior; the camera-origin yellow debug line is not a controller laser. |
 | XR grab / feedback | XRI `XRGrabInteractable` and Common `EmVrXrGrabFeedbackBridge` on the neutral/domain object, sharing Common feedback/state with desktop. |
-| XR UI / button / spawning | `EmVrGate5FoundationSceneUtility`, the rig's input actions, one XR EventSystem and persistent buttons, plus Common spawner/harness. Keep protected six-file foundation copy byte-identical. |
+| XR UI / button / spawning | `EmVrGate5FoundationSceneUtility`, the rig's input actions, one XR EventSystem and persistent buttons, plus Common spawner/harness. Keep each foundation file byte-identical to its entry in the Gate 5 manifest. |
 
 Default composition configures existing code. Both complete Prefabs must already
 be instantiated through approved imports; `systems` is outside their hierarchies:

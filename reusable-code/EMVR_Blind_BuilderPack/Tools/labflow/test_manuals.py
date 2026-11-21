@@ -55,6 +55,20 @@ class StudentManualTests(unittest.TestCase):
     def validate(self):
         return manuals.validate_source(self.root, self.state, labflow, self.source)
 
+    def test_chinese_manual_renders_and_preserves_text(self):
+        from PIL import Image
+        from pypdf import PdfReader
+
+        image = self.root / self.source["figures"][0]["path"]
+        Image.new("RGB", (220, 80), "white").save(image)
+        self.source["sections"][0]["paragraphs"] = ["固定螺线管中心的探针，记录电流与磁场。"]
+        self.meta.update(language="简体中文", manual_title="螺线管实验")
+        pdf = self.root / "manual.pdf"
+        manuals.render_pdf(self.root, self.source, self.meta, pdf)
+        text = "".join(page.extract_text() for page in PdfReader(pdf).pages)
+        for phrase in ("螺线管实验", "记录电流与磁场", "实验拓展", "提交要求"):
+            self.assertIn(phrase, text)
+
     def ready_evidence(self, pages=2):
         meta, dependencies = self.validate()
         base = manuals.base_path(self.root, self.lab)

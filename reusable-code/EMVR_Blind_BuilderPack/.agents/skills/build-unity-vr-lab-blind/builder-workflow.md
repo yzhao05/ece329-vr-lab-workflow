@@ -645,6 +645,11 @@ Submit both steps together for one Gate 8 user confirmation. Neither 8A nor file
 existence is approval. Missing captures/results remain pending. Workflow maintenance
 does not execute current Lab gates or request its course metadata.
 
+When generating the Gate 5 scene builder, load the current Lab's imported XR Device Simulator
+prefab with `EmVrGate5FoundationSceneUtility.LoadSimulatorPrefab(prefabPath)` before
+instantiating it. This checks the device, controller and hand input assets in Unity and
+retries their import when needed. Use the same loader on subsequent scene rebuilds.
+
 Maintenance closure rules: Gate 5 must call the protected portable
 `EmVrRoomLighting` from `Gate5Foundation/Editor/`, imported by the foundation
 materializer; do not recreate its execution-settings/cache/save-guard implementation

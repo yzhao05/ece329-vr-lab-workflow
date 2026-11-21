@@ -146,8 +146,8 @@ def read_guids(path: Path) -> set[str]:
     try:
         with open(native_path(path), "r", encoding="utf-8-sig", errors="ignore") as stream:
             text = stream.read()
-    except OSError:
-        return set()
+    except OSError as error:
+        raise RuntimeError(f"Cannot read approved dependency references from {path}: {error}") from error
     return {match.lower() for match in GUID_PATTERN.findall(text)}
 
 
@@ -287,6 +287,7 @@ def asset_record(source: Path, approved_root: Path, destination_root: Path) -> d
 
 
 def import_closure(project_root: Path, lab_id: str, source_value: str, dry_run: bool) -> dict:
+    project_root = Path(native_path(project_root)).resolve()
     if not LAB_ID_PATTERN.fullmatch(lab_id):
         raise RuntimeError("lab_id must use lowercase letters, digits, and underscores")
     active_gate = workflow_gate(project_root, lab_id)

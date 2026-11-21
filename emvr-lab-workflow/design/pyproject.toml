@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
 authors = [{name = "ZJUI ECE329 Workflow Team"}]
-dependencies = ["reportlab>=4.2,<5", "pillow>=10,<13", "jsonschema>=4.23,<5"]
+dependencies = ["reportlab>=4.2,<5", "pillow>=10,<13", "jsonschema>=4.23,<5", "pypdf>=5", "python-docx>=1.1,<2"]
 
 [project.optional-dependencies]
 harness = ["deepseek-harness-sdk==0.2.1rc2"]

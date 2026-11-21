@@ -5,6 +5,7 @@
     "EMVR.ReusableFoundation.Gate5.Runtime",
     "EMVR.ReusableFoundation.Gate5.Editor",
     "EMVR.Common.Runtime",
+    "Unity.XR.Interaction.Toolkit",
     "Unity.ugui"
   ],
   "includePlatforms": [

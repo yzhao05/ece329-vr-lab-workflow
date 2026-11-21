@@ -251,6 +251,7 @@ def render_pdf(root, source, meta, destination):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, KeepTogether
     font_dir = Path(reportlab.__file__).parent / "fonts"
@@ -268,33 +269,57 @@ def render_pdf(root, source, meta, destination):
         "title": ParagraphStyle("title", fontName="ManualBold", fontSize=18, leading=24, alignment=TA_CENTER, spaceAfter=22),
         "caption": ParagraphStyle("caption", fontName="Manual", fontSize=9, leading=12, alignment=TA_CENTER, spaceAfter=12, textColor=colors.HexColor("#333333")),
     }
+    chinese = bool(re.search(r"^zh\b|chinese|中文|简体|繁體", meta["language"].lower().replace("_", "-")))
+    chinese_sections = ("实验简介", "理论基础", "VR 实验交互方式", "实验操作指导", "练习与挑战", "实验拓展")
+    cjk_runs = re.compile(r"([\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff01-\uff60]+)")
+    cjk_path = next((p for p in (windows_fonts / "msyh.ttc", Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"))
+                     if p.is_file()), None)
+
     def para(text, style="body"):
         glyphs = pdfmetrics.getFont(styles[style].fontName).face.charToGlyph
-        missing = {c for c in text if not c.isspace() and ord(c) not in glyphs}
+        missing = {c for c in cjk_runs.sub("", text) if not c.isspace() and ord(c) not in glyphs}
+        markup = escape(text).replace("\n", "<br/>")
+        paragraph_style = styles[style]
+        runs = cjk_runs.findall(text)
+        if runs:
+            font = "ManualCJK" if cjk_path else "STSong-Light"
+            if font not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(font, str(cjk_path)) if cjk_path else UnicodeCIDFont(font))
+            if cjk_path:
+                cjk_glyphs = pdfmetrics.getFont(font).face.charToGlyph
+                missing.update(c for run in runs for c in run if ord(c) not in cjk_glyphs)
+            markup = cjk_runs.sub(lambda run: f'<font name="{font}">{run[0]}</font>', markup)
+            paragraph_style = ParagraphStyle(style + "CJK", parent=paragraph_style, wordWrap="CJK")
         if missing:
             raise ValueError("Unsupported font glyphs; supply a clearly labeled theory diagram for formulas or add reviewed font support: " + repr(sorted(missing)))
-        return Paragraph(escape(text).replace("\n", "<br/>"), styles[style])
-    story = [para(f"Lab {meta['manual_number']} {meta['manual_title']}", "title")]
+        return Paragraph(markup, paragraph_style)
+    lab_label = "实验" if chinese else "Lab"
+    story = [para(f"{lab_label} {meta['manual_number']} {meta['manual_title']}", "title")]
     figures = {f["id"]: f for f in source["figures"]}
     width = A4[0] - 120
     for i, section in enumerate(source["sections"], 1):
-        story.append(para(f"{meta['manual_number']}.{i} {section['title']}", "heading"))
+        title = chinese_sections[i - 1] if chinese else section["title"]
+        story.append(para(f"{meta['manual_number']}.{i} {title}", "heading"))
         story.extend(para(p) for p in section["paragraphs"])
         if i == 5:
-            story.append(para("Submission: " + meta["report_submission_requirements"]))
+            story.append(para(("提交要求：" if chinese else "Submission: ") + meta["report_submission_requirements"]))
             for q in source["questions"]:
-                points = "ungraded" if q["points"] is None else str(q["points"]) + " points"
-                if q["bonus"]:
-                    points += ", bonus"
+                if chinese:
+                    points = ("不计分" if q["points"] is None else f"{q['points']} 分") + ("，加分题" if q["bonus"] else "")
+                else:
+                    points = ("ungraded" if q["points"] is None else f"{q['points']} points") + (", bonus" if q["bonus"] else "")
                 story.append(KeepTogether([para(q["id"] + " (" + points + "). " + q["prompt"]),
-                                           para("Submit: " + q["submission"])]))
+                                           para(("提交：" if chinese else "Submit: ") + q["submission"])]))
         for fid in section.get("figure_ids", []):
             fig = figures[fid]
             img = Image(str(checked_path(root, fig["path"])))
             ratio = min(width / img.imageWidth, 330 / img.imageHeight)
             img.drawWidth = img.imageWidth * ratio
             img.drawHeight = img.imageHeight * ratio
-            caption = "Figure " + fid + ". " + ("Theory diagram" if fig["kind"] == "theory" else "Current Lab screenshot") + " - " + fig["caption"]
+            if chinese:
+                caption = "图 " + fid + " " + ("理论示意图" if fig["kind"] == "theory" else "本实验截图") + " — " + fig["caption"]
+            else:
+                caption = "Figure " + fid + ". " + ("Theory diagram" if fig["kind"] == "theory" else "Current Lab screenshot") + " - " + fig["caption"]
             story.append(KeepTogether([Spacer(1, 8), img, para(caption, "caption")]))
     def footer(canvas, doc):
         canvas.setFont("Manual", 8)

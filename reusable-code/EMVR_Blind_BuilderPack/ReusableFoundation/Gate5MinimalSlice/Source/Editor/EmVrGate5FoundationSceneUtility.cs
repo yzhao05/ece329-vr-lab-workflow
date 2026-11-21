@@ -1,9 +1,13 @@
 using System;
+using System.IO;
+using UnityEditor;
 using UnityEditor.Events;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
+using UnityEngine.XR.Interaction.Toolkit.Inputs.Simulation;
 using UnityEngine.XR.Interaction.Toolkit.UI;
 
 namespace EMVR.ReusableFoundation.Gate5.Editor
@@ -11,6 +15,44 @@ namespace EMVR.ReusableFoundation.Gate5.Editor
     /// <summary>Neutral scene wiring used by every Gate 5 minimal slice.</summary>
     public static class EmVrGate5FoundationSceneUtility
     {
+        public static GameObject LoadSimulatorPrefab(string prefabPath)
+        {
+            // These sibling assets supply the three serialized maps on the approved XRI prefab.
+            string directory = Path.GetDirectoryName(prefabPath).Replace('\\', '/');
+            string[] actionFiles = { "XR Device Simulator Controls", "XR Device Controller Controls", "XR Device Hand Controls" };
+            var actions = new InputActionAsset[actionFiles.Length];
+            const ImportAssetOptions retry = ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate;
+            for (int i = 0; i < actions.Length; i++)
+            {
+                string path = directory + "/" + actionFiles[i] + ".inputactions";
+                actions[i] = AssetDatabase.LoadAssetAtPath<InputActionAsset>(path);
+                if (actions[i] == null)
+                {
+                    AssetDatabase.ImportAsset(path, retry);
+                    actions[i] = AssetDatabase.LoadAssetAtPath<InputActionAsset>(path);
+                    if (actions[i] == null)
+                        throw new InvalidOperationException($"Unity could not import {path}. Reopen the project using its short path and check the import error.");
+                }
+            }
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            if (!HasSimulatorActions(prefab, actions))
+            {
+                AssetDatabase.ImportAsset(prefabPath, retry);
+                prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+                if (!HasSimulatorActions(prefab, actions))
+                    throw new InvalidOperationException($"Missing XR simulator input references on {prefabPath} after reimport.");
+            }
+            return prefab;
+        }
+
+        static bool HasSimulatorActions(GameObject prefab, InputActionAsset[] actions)
+        {
+            var sim = prefab == null ? null : prefab.GetComponentInChildren<XRDeviceSimulator>(true);
+            return sim != null && sim.deviceSimulatorActionAsset == actions[0]
+                && sim.controllerActionAsset == actions[1] && sim.handActionAsset == actions[2];
+        }
+
         public static EventSystem EnsureSingleXrEventSystem(Transform parent)
         {
             EventSystem[] systems = UnityEngine.Object.FindObjectsOfType<EventSystem>(true);
@@ -54,6 +96,13 @@ namespace EMVR.ReusableFoundation.Gate5.Editor
             {
                 throw new ArgumentNullException("Gate 5 button parent, font, and callback are required.");
             }
+
+            Canvas canvas = parent.GetComponentInParent<Canvas>(true);
+            if (canvas != null && canvas.GetComponent<GraphicRaycaster>() == null)
+                canvas.gameObject.AddComponent<GraphicRaycaster>();
+            if (canvas != null && canvas.renderMode == RenderMode.WorldSpace &&
+                canvas.GetComponent<TrackedDeviceGraphicRaycaster>() == null)
+                canvas.gameObject.AddComponent<TrackedDeviceGraphicRaycaster>();
 
             GameObject buttonObject = new GameObject(
                 objectName,

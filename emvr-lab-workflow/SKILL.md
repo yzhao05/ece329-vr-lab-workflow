@@ -57,6 +57,8 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 
 ## 进入或续接 Builder
 
+Gate 6 验收后，Gate 8A 先为本实验制作学生手册和开发者手册。Gate 8B 增补项目总手册时，优先使用用户指定的当前原稿；首次制作可使用交付根自带的 `knowledge/sources/EM VR Lab Development Handbook.docx`。从交付根解析为绝对路径，作为 `handbooks.py stage-master --source` 的输入。若本项目已有增补后的总手册，续用该版，保留既有章节。增补文件写入当前工作区的 `BuildEvidence/<lab_id>/handbooks/project-master/`，保留输入原稿。
+
 用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。若使用 Gate 6 的 code_archive.py publish 同时记录批准，附上相同的 `--turn-id TURN_ID`。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
 
 记录工作区的实际绝对路径 PACK。在交付根用项目解释器执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`。规程中的其他 labflow 子命令也通过这个入口转发，适用于已经冻结 Gate 0 基线的旧工作区。若是旧包，请使用更新后的交付根执行，保留原 PACK 和实验编号。
@@ -80,7 +82,7 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 | --- | --- | --- | --- | --- |
 | 查课程依据、设计经验或构建参考 | 问题中的概念、用途 | 用 `workflow.py knowledge "关键词" --scope design` 或 `--scope builder` 检索[知识库目录](../knowledge/catalog.json) | 引用讲义标题和真实页码，或来源文件的相对路径和行号 | 缩小关键词或回到索引核对，说明仍缺少的依据 |
 | 用户反馈某轮有误，或维护者要审阅经验规则 | 设计编号、具体问题和稳定的 `request_id`；审阅时需要候选版本 | 用 `workflow.py feedback DESIGN_ID --submit` 从 UTF-8 JSON 输入提交，如 `{"message":"修改没有更新到草稿","category":"cross_stage_edit","request_id":"feedback-turn-004"}`。用 `feedback-process --ticket TICKET_ID` 读取证据和格式，再用同一命令加 `--candidate 文件路径` 提交含 `ticket_id`、`candidate` 的分析。维护者明确审阅后，用 `experience-review EXPERIENCE_ID` 从 JSON 输入提交 `decision`、`version`、`note`，可执行规则还需原生验证凭证 | 保存工单号，后续依据实际启用并返回的 `experience_rules` 调整反馈 | 用 `feedback DESIGN_ID` 核对队列，同一反馈沿用同一请求 ID。已配置模型时可用 `workflow.py --provider environment feedback-process` 处理一条；未获批准的候选继续待审 |
-| 同一实验完成 Design 和 Builder，且 Gate 8 两本手册均已批准 | 关联设计编号、已验收的版本、两个流程的实际问题与证据 | 主 Agent 用 UTF-8 Markdown 记录问题、触发条件、处理方法、验证结果和仍有限制；没有遇到问题时据实记录。执行 `workflow.py retrospective DESIGN_ID --notes 文件路径` | 核对返回的 `knowledge_update` 位于 `knowledge/newknowledge/<design_id>/<设计指纹>.md`。同版本重试更新同一记录 | 尚未完成时回到对应工作区核对状态；等到条件满足后再提交复盘 |
+| 同一实验完成 Design 和 Builder，且 Gate 8A 两本实验手册和 Gate 8B 项目总手册增补已一并获批 | 关联设计编号、已验收的版本、两个流程的实际问题与证据 | 主 Agent 用 UTF-8 Markdown 记录问题、触发条件、处理方法、验证结果和仍有限制；没有遇到问题时据实记录。执行 `workflow.py retrospective DESIGN_ID --notes 文件路径` | 核对返回的 `knowledge_update` 位于 `knowledge/newknowledge/<design_id>/<设计指纹>.md`。同版本重试更新同一记录 | 尚未完成时回到对应工作区核对状态；等到条件满足后再提交复盘 |
 
 **新增知识固定写入交付根下的 `knowledge/newknowledge/`。** 原 `knowledge/extensions/` 的内容继续供检索。新增 Markdown、TXT、JSON，或附同名文字索引的 PDF。新建集成 Builder 工作区会得到当时的 `KnowledgeBase/extensions/newknowledge/` 副本。规则审阅保存在所用状态目录的 `design.sqlite3`，知识库复盘供以后检索参考。
 
