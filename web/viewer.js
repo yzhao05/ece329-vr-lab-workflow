@@ -218,10 +218,12 @@ function drawBuilder(b) {
     b.migration_required ? t("Legacy Builder workspace requires migration", "旧版 Builder 工作区需要迁移") :
     recheck === 6 ? t("Gate 6 · Scene acceptance must be renewed", "Gate 6 · 场景需要重新验收") :
     recheck === 8 ? t("Gate 8 · Handbooks require revalidation", "Gate 8 · 手册需要重新验证") :
+    b.retrospective_pending ? t("Gate 8 · Accepted, retrospective pending", "Gate 8 · 验收通过，待归档复盘") :
+    b.upload_pending ? t("Gate 8 · Accepted, upload folders pending", "Gate 8 · 验收通过，上传副本待整理") :
     b.workflow_complete ? t("Build complete","构建已完成") : current == null ? t("Check Builder status","需要核对 Builder 状态") :
     "Gate " + current + " · " + label(stages.builder.find(g => g.gate === current)?.title || b.current_gate_name || "") + (b.accepted ? t(" · Scene accepted"," · 场景已验收") : "");
   find("gates").replaceChildren(...stages.builder.map(g => {
-    const active = current === g.gate && !b.workflow_complete;
+    const active = current === g.gate && !b.workflow_complete && !b.retrospective_pending && !b.upload_pending;
     const invalidated = recheck !== null && g.gate >= recheck;
     const status = active && invalidated ? t("Needs revalidation", "待重新验证") : active ? (b.gate_ready_for_approval ? "待确认" : "进行中") :
       !invalidated && (b?.workflow_complete || (approved ? approved.has(g.gate) : current != null && g.gate < current)) ? "已确认" : "待开始";

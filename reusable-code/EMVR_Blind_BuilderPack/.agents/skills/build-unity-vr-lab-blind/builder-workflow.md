@@ -589,7 +589,7 @@ the delivery root. All selected source paths are relative to
 | When | Host action | Check before continuing |
 | --- | --- | --- |
 | Gate 5A foundation checks have passed, before the first Gate 5B edit | `python emvr-lab-workflow/scripts/code_archive.py begin --workspace "PACK" --lab-id LAB_ID` | Confirm `baseline_recorded` for this run. |
-| Gate 5B implementation and tests are ready, before Gate 5 approval | `python emvr-lab-workflow/scripts/code_archive.py capture --workspace "PACK" --lab-id LAB_ID --file "Scripts/Example.cs"` | Replace the example and repeat `--file` for each new or modified domain source, shader, assembly definition or test. Check the returned `selected` list. |
+| Gate 5B implementation and tests are ready, before Gate 5 approval | `python emvr-lab-workflow/scripts/code_archive.py capture --workspace "PACK" --lab-id LAB_ID --file "Scripts/Example.cs"` | Replace the example and repeat `--file` for each new or modified domain source, shader, assembly definition or test. Review `selected` and `unselected_changes` against the types the selected scripts use. If a changed dependency belongs to the slice, repeat capture with the full file list. Record any dependencies supplied by the existing project in the developer handbook. |
 | User accepts the Gate 6 scene | `python emvr-lab-workflow/scripts/code_archive.py publish --workspace "PACK" --lab-id LAB_ID --approval-note "USER_FEEDBACK" --turn-id TURN_ID` | Substitute the user's actual acceptance. If native approval is already recorded, omit `--approval-note`. Verify the returned archive under `reusable-code/newcode/<lab_id>/<accepted-digest>/` and the selected files, including available Unity metadata. |
 
 If publication fails, inspect the current native acceptance and the selection.
@@ -612,7 +612,7 @@ for other observed blockers invoke `retrospective --kind ... --note ...` immedia
 Diagnose, repair within ownership, verify, and resolve with verified lessons, then
 return to the same gate. Do not advance or approve a gate during unresolved recovery.
 Normal pending evidence is not a failure. Protected repairs remain maintainer-owned.
-No separate final retrospective gate or retrospective approval remains.
+When this pack is run through the unified skill, prepare the run retrospective before requesting joint Gate 8 approval. Record the user's approval with the delivery root’s `emvr-lab-workflow/scripts/builder.py` as described in the unified Skill, passing the draft via `--notes`. Check the returned `knowledge_update`, `newcode` and `newknowledge` before reporting delivery. If publication is pending, retry with the recorded approval. Blocker retrospectives remain in the run's evidence directory. At Gate 8 the host agent prepares both upload folders from the accepted project and this run’s knowledge updates. Check the build dependencies and give the user both local paths. The user uploads the folders. If preparation fails after acceptance, resume with the unified skill’s `prepare-upload` command.
 
 
 ## Gate 8: Lab Manual generation after experiment acceptance

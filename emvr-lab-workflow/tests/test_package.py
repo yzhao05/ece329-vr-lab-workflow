@@ -189,6 +189,13 @@ def test_finished_handoff(tmp_path):
     result = cli(tmp_path, "builder-init", key)
     pack = Path(result["builder_workspace"])
     lab_id = "ece329_solenoid_regression"
+    assert cli(tmp_path, "show", key)["status_line"] == result["status_line"]
+    premature = subprocess.run(
+        [sys.executable, str(SKILL / "scripts/builder.py"), str(pack), "approve-gate",
+         "--lab-id", lab_id, "--gate", "6", "--turn-id", "early", "--note", "test"],
+        capture_output=True, encoding="utf-8",
+    )
+    assert premature.returncode and "Missing Gate 5B source selection" in premature.stderr
     inputs = pack / "LabSpecs" / lab_id / "design-input"
     assert Path(result["builder_inputs"]) == inputs
     assert result["builder_inputs_match_export"] is True
@@ -498,7 +505,9 @@ def test_gate5b_archive_bound_to_acceptance(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         run("capture", "Scripts/Lab.cs")
     owned.write_text("class Lab {}")
-    run("capture", r"Scripts\Lab.cs")
+    (owned.parent / "Plot.cs").write_text("class Plot {}")
+    selection = run("capture", r"Scripts\Lab.cs")
+    assert selection == {"selected": ["Scripts/Lab.cs"], "unselected_changes": ["Scripts/Plot.cs"]}
     with pytest.raises(ValueError):
         run("publish")
     status.update(current_gate=8, accepted=True, approved_gates=[0,1,2,3,4,5,6])
@@ -526,23 +535,36 @@ def test_gate5b_archive_bound_to_acceptance(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="legacy"):
         run("publish")
 
-def test_completed_retrospective_is_written_and_searchable(tmp_path, monkeypatch):
+def test_legacy_retrospective_replay_preserves_searchable_gate8_archive(tmp_path, monkeypatch):
     sys.path.insert(0, str(SKILL / "scripts"))
     import workflow
-    _, session = completed_magnetic_engine()
+    import pytest
+    engine, session = completed_magnetic_engine()
     session._store_snapshot = None
     SQLiteSessionStore(tmp_path / "private/design.sqlite3").save(session)
     shutil.copytree(ROOT / "knowledge", tmp_path / "knowledge", ignore=shutil.ignore_patterns("*.pdf"))
     monkeypatch.setattr(workflow, "ROOT", tmp_path)
-    monkeypatch.setattr(workflow, "active_builder", lambda state, key, fingerprint: {
-        "workflow_complete":True, "accepted":True, "source_fingerprint":fingerprint})
+    def completed_builder(state, key, fingerprint):
+        return {"workflow_complete": True, "accepted": True, "source_fingerprint": fingerprint,
+                "knowledge_update": f"knowledge/newknowledge/{key}/{fingerprint}.md"}
+    monkeypatch.setattr(workflow, "active_builder", completed_builder)
     notes = tmp_path / "notes.md"
     notes.write_text("Design: solenoid. Builder: verify recap-current.", encoding="utf-8")
+    design = engine.get_design(session.design_id)
+    record = completed_builder(None, session.design_id, workflow.builder_fingerprint(design))["knowledge_update"]
+    archived = tmp_path / record
+    archived.parent.mkdir(parents=True)
+    archived.write_bytes(notes.read_bytes())
     monkeypatch.setattr(sys, "argv", ["workflow", "--state-dir", str(tmp_path / "private"),
         "--web-dir", str(tmp_path / "web"), "retrospective", session.design_id, "--notes", str(notes)])
-    record = workflow.main()["knowledge_update"]
-    assert record.startswith("knowledge/newknowledge/")
-    assert (tmp_path / record).read_text(encoding="utf-8").strip() == notes.read_text(encoding="utf-8")
     assert workflow.main()["knowledge_update"] == record
+    # A pending upload does not undo the archived retrospective.
+    monkeypatch.setattr(workflow, "active_builder", lambda *args: {
+        **completed_builder(*args), "workflow_complete": False, "upload_pending": True})
+    assert workflow.main()["knowledge_update"] == record
+    notes.write_text("Different retrospective", encoding="utf-8")
+    with pytest.raises(ValueError, match="already archived"):
+        workflow.main()
+    assert "recap-current" in archived.read_text(encoding="utf-8")
     for scope in ("design", "builder"):
         assert workflow.search(tmp_path, "recap-current", scope)["documents"][0]["path"] == record

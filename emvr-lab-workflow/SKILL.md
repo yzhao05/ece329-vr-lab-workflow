@@ -5,7 +5,7 @@ description: 在宿主 Agent 对话中开始或续接 ECE329 电磁学 VR 实验
 
 # ECE329 VR 实验设计与构建
 
-用户在聊天里讨论、修订并确认方案。主 Agent 负责打开流程网页、执行命令、展示证据和可修改的草稿，并把用户的实际决定写回工作流。以下路径均以本文件上一级的**交付根目录**为基准。下文的 `viewer.py`、`workflow.py` 均指 `emvr-lab-workflow/scripts/` 中的同名脚本，用宿主的 Python 3.11+ 执行。例：
+用户在聊天里讨论、修订并确认方案。主 Agent 负责打开流程网页、执行命令、展示证据和可修改的草稿，并把用户的实际决定写回工作流。以下路径均以本文件上一级的**交付根目录**为基准。下文的 `viewer.py`、`workflow.py` 均指 `emvr-lab-workflow/scripts/` 中的同名脚本，示例中的 `python` 指 README 第 2 节已安装设计引擎的项目解释器。Windows 使用 `.venv/Scripts/python.exe`，macOS 使用 `.venv/bin/python`。从交付根运行，例如：
 
 ```sh
 python emvr-lab-workflow/scripts/viewer.py open --new
@@ -59,11 +59,11 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 
 Gate 6 验收后，Gate 8A 先为本实验制作学生手册和开发者手册。Gate 8B 增补项目总手册时，优先使用用户指定的当前原稿；首次制作可使用交付根自带的 `knowledge/sources/EM VR Lab Development Handbook.docx`。从交付根解析为绝对路径，作为 `handbooks.py stage-master --source` 的输入。若本项目已有增补后的总手册，续用该版，保留既有章节。增补文件写入当前工作区的 `BuildEvidence/<lab_id>/handbooks/project-master/`，保留输入原稿。
 
-用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。若使用 Gate 6 的 code_archive.py publish 同时记录批准，附上相同的 `--turn-id TURN_ID`。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
+用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。Gate 8 还须加下文的 `--notes` 参数，在这次批准中完成复盘归档。Gate 6 通过这个入口同步发布 Gate 5B 已选源码，核对返回的 `archive`。若原工作区已记录 Gate 6 验收但复制失败，按 Builder 规程重试 `code_archive.py publish`，沿用原验收。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
 
 记录工作区的实际绝对路径 PACK。在交付根用项目解释器执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`。规程中的其他 labflow 子命令也通过这个入口转发，适用于已经冻结 Gate 0 基线的旧工作区。若是旧包，请使用更新后的交付根执行，保留原 PACK 和实验编号。
 
-在第一次要求用户打开 Unity 前，执行 `python emvr-lab-workflow/scripts/builder.py "PACK" unity-project`，把返回的路径交给用户在 Unity Hub 打开。Windows 会映射空闲盘符。请在与 Unity Hub 相同的 Windows 用户会话和权限级别执行；若 Agent 沙箱与桌面隔离，在用户桌面终端运行同一命令。用户若已从长路径打开，先保存并关闭那个编辑器，再从返回的短路径打开同一个工程。重启电脑后重新执行命令，重新获取盘符。Gate 记录、代码归档继续使用 PACK。遇到空 Plugins 目录时保留目录及其 .meta，用上述入口重新核验原基线。实际文件变更仍须审查。
+在第一次要求用户打开 Unity 前，从交付根执行 `python emvr-lab-workflow/scripts/builder.py "PACK" unity-project`。Windows 会在当前用户的 `%LOCALAPPDATA%\EMVR` 中创建可跨重启复用的目录联接，向用户提供命令输出的完整路径，在 Unity Hub 中添加一次。对于 Design 交接创建的运行，可用实验编号代替 PACK 查找工程；独立 Builder 使用实际 PACK 路径。若有多个匹配，先确认具体工作区。使用自定义状态目录时在实验编号前加 `--state-dir "STATE"`。旧条目已打开时，先保存并关闭，再从新入口打开。Gate 记录、归档和完整性检查继续使用原 PACK。遇到 Unity 重建空 Plugins 目录时保留目录及其 .meta，并复查原基线。
 
 
 详细规程集中在 [builder-workflow.md](../reusable-code/EMVR_Blind_BuilderPack/.agents/skills/build-unity-vr-lab-blind/builder-workflow.md)。选定工作区后读取**该工作区内**的同名文件，从 **Create or resume a run** 及当前 Gate 开始。该文件还说明主 Agent 应在何时从交付根调用代码归档工具，固定目标为 `reusable-code/newcode/`。
@@ -82,7 +82,15 @@ Gate 6 验收后，Gate 8A 先为本实验制作学生手册和开发者手册�
 | --- | --- | --- | --- | --- |
 | 查课程依据、设计经验或构建参考 | 问题中的概念、用途 | 用 `workflow.py knowledge "关键词" --scope design` 或 `--scope builder` 检索[知识库目录](../knowledge/catalog.json) | 引用讲义标题和真实页码，或来源文件的相对路径和行号 | 缩小关键词或回到索引核对，说明仍缺少的依据 |
 | 用户反馈某轮有误，或维护者要审阅经验规则 | 设计编号、具体问题和稳定的 `request_id`；审阅时需要候选版本 | 用 `workflow.py feedback DESIGN_ID --submit` 从 UTF-8 JSON 输入提交，如 `{"message":"修改没有更新到草稿","category":"cross_stage_edit","request_id":"feedback-turn-004"}`。用 `feedback-process --ticket TICKET_ID` 读取证据和格式，再用同一命令加 `--candidate 文件路径` 提交含 `ticket_id`、`candidate` 的分析。维护者明确审阅后，用 `experience-review EXPERIENCE_ID` 从 JSON 输入提交 `decision`、`version`、`note`，可执行规则还需原生验证凭证 | 保存工单号，后续依据实际启用并返回的 `experience_rules` 调整反馈 | 用 `feedback DESIGN_ID` 核对队列，同一反馈沿用同一请求 ID。已配置模型时可用 `workflow.py --provider environment feedback-process` 处理一条；未获批准的候选继续待审 |
-| 同一实验完成 Design 和 Builder，且 Gate 8A 两本实验手册和 Gate 8B 项目总手册增补已一并获批 | 关联设计编号、已验收的版本、两个流程的实际问题与证据 | 主 Agent 用 UTF-8 Markdown 记录问题、触发条件、处理方法、验证结果和仍有限制；没有遇到问题时据实记录。执行 `workflow.py retrospective DESIGN_ID --notes 文件路径` | 核对返回的 `knowledge_update` 位于 `knowledge/newknowledge/<design_id>/<设计指纹>.md`。同版本重试更新同一记录 | 尚未完成时回到对应工作区核对状态；等到条件满足后再提交复盘 |
+| Gate 8A 和 8B 均可验收 | 当前工作区、实验编号、两个流程的证据，以及用户对 Gate 8 的批准 | 主 Agent 在请求最终批准前准备 UTF-8 Markdown 复盘，写明实际问题、触发条件、处理、验证和遗留限制；如无已知问题据实记录。仅走 Builder 时总结本次搭建。收到批准后运行下方命令 | 同一次调用返回 `knowledge_update`、`newcode`、`newknowledge`，按下文核对后报告完成 | 若已验收但写入失败，解决写入错误后用同一原话和 turn-id 重试，继续归档已保存的草稿 |
+
+```text
+python emvr-lab-workflow/scripts/builder.py "PACK" approve-gate --lab-id LAB_ID --gate 8 --note "用户原话" --turn-id TURN_ID --notes "复盘草稿.md"
+```
+
+与设计关联的复盘存入 `knowledge/newknowledge/<design_id>/<设计指纹>.md`；独立 Builder 使用 `knowledge/newknowledge/builder/<lab_id>/<验收版本指纹>.md`。草稿由主 Agent 在工作区证据目录准备，只记录与实验有关的事实。旧版已验收的运行可用上述入口补档；状态为待归档时无需再次向用户请求批准。
+
+**Gate 8 的最后一步由主 Agent 整理维护者上传副本。** 将提交名与手册确认一起收集，已知提交名时给上方命令加 `--submitter "名字"`，未指定则沿用实验编号。默认带上本次复盘；本轮另有新增知识文件时，对每个文件追加一次 `--knowledge-file "相对于 knowledge/newknowledge 的路径"`。沿用本次构建使用的 `--state-dir`（如有）。命令会在状态目录的 `uploads/<lab_id>/` 中生成两个独立的本地上传副本。对照开发手册核对该版本的源码和本地依赖，遇到项目特有的其他源码类型时由 Agent 补入副本并保留相对路径与元数据。核对两个文件夹后给出 `newcode`、`newknowledge` 的完整路径、实验编号和关联的设计编号，让用户自行上传或压缩。手册和复盘已验收但副本整理失败时，说明“Gate 8 已验收，上传副本待整理”，修正错误后运行 `builder.py "PACK" prepare-upload --lab-id LAB_ID`，沿用原提交名及额外知识文件，无需再次批准。[用户提交步骤](../README.md#knowledge-archive)
 
 **新增知识固定写入交付根下的 `knowledge/newknowledge/`。** 原 `knowledge/extensions/` 的内容继续供检索。新增 Markdown、TXT、JSON，或附同名文字索引的 PDF。新建集成 Builder 工作区会得到当时的 `KnowledgeBase/extensions/newknowledge/` 副本。规则审阅保存在所用状态目录的 `design.sqlite3`，知识库复盘供以后检索参考。
 

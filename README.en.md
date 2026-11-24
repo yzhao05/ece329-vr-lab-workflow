@@ -2,15 +2,13 @@
 
 [简体中文教程](README.md) · English
 
+This tutorial follows a long-solenoid experiment. On first use, complete sections 1–3. For design and PDF export, go straight to [section 5](#start-design). To build the scene in Unity, first complete [Unity setup in section 4](#install-unity). If you already have a plan or want to resume a build, go to [section 7](#start-builder).
+
 Already installed? Go to [update a Git clone](#update-git) or [update a ZIP download](#update-zip).
-
-You can design an experiment, export PDFs and view an already exported 3D scene in the browser without installing Unity. To build the experiment, you will need the Unity Editor at Builder Gate 4 to compile the C# scripts. For your first build, see [install Unity and check compilation](#install-unity).
-
-Follow one example from start to finish: how does current affect the magnetic field at the center of a long solenoid? You will set up the project, discuss the experiment with an agent, export the design, and optionally build it in Unity. Complete steps 1–3 once. On later visits, start at step 4. In step 3, follow only the instructions for your desktop app.
 
 ## 1. Download the project and open its folder
 
-1. On the project's GitHub page choose **Code → Download ZIP**. On Windows, right-click the ZIP and select **Extract All**. On macOS, double-click it. If your instructor provided an extracted folder, open that folder.
+1. Choose one download method. For Git, open a terminal in the parent folder and run `git clone https://github.com/yzhao05/ece329-vr-lab-workflow.git`. For ZIP, open the [project repository](https://github.com/yzhao05/ece329-vr-lab-workflow) and choose **Code → Download ZIP**. On Windows, right-click the ZIP and select **Extract All**. On macOS, double-click it. If your instructor provided an extracted folder, open that folder.
 2. Find the folder where you can see `README.md`, `emvr-lab-workflow`, `knowledge`, `web`, `unity-package`, and `reusable-code` together. This is the **repository root**. Keep those directories together.
 3. **Windows:** in File Explorer, open that folder, type `powershell` in the address bar, and press Enter. **macOS:** open Terminal, type `cd ` with a trailing space, drag the folder into Terminal, and press Return. Use this window for the setup commands below.
 
@@ -35,7 +33,7 @@ Follow one example from start to finish: how does current affect the magnetic fi
    .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
    ```
 
-3. Look for output containing `course` and `formulas`. You're ready to connect the desktop agent. The default engine uses your host agent without a separate model API key. You can finish step 5 before installing Unity.
+3. Look for output containing `course` and `formulas`. You're ready to connect the desktop agent. The default engine uses your host agent without a separate model API key.
 
 ## 3. Load the skill in your desktop agent (choose one)
 
@@ -140,75 +138,99 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 3. Paste the entire “Entry file contents” block above into the empty file and save it. Press **Ctrl+Shift+P** (**⇧⌘P** on macOS), run **Chat: Open Customizations**, and choose **Skills** to inspect the workspace entry. Open a fresh Copilot chat, type `/emvr-lab-workflow`, and select the command. [VS Code · Agent Skills](https://code.visualstudio.com/docs/copilot/customization/agent-skills)
 
-## 4. Start an experiment in chat, then resume it
-
-1. In the project chat, select the skill and add this request to the same message:
-
-   > I want to design an ECE329 VR experiment to see how current affects the magnetic field at the center of a long solenoid. Open the live progress page and ask me the first design question.
-
-2. On first use, the app may ask to run Python in the project or open the local page. Check the project and allow the requested operation. Look for a `design_id`, a first question, and the progress page. If a browser tab doesn't open, click the local URL returned by the agent. The four panels show workflow progress, course evidence, design notes, and design checks. The viewer starts in English and has a Chinese language switch at the top right. **Answer questions in the agent chat.**
-3. Try “Which lecture supports that formula?” Then ask “Revise the draft to measure only at the center and hold the number of turns and coil length fixed.” Review the updated draft and say “Confirm this stage” when it matches your intent. Watch the corresponding progress items change on the page.
-4. Keep the actual `design_id`. The next time you open the same local project, select the same skill and say “Continue design [paste my ID] from the last draft awaiting my confirmation.” Check that the ID and stage match. If several labs have similar names, choose the original one from the agent's suggestions.
-
-## 5. Confirm the design and export it
-
-1. At the end of the seven design stages, review the complete draft and say “I confirm the whole design. Please export it.” If the agent identifies a missing item, revise that item and confirm again.
-2. Open the `artifacts` folder the agent returns. Look for `design.pdf` for you to read, `builder-gate1-input.pdf` for Builder to review, and `builder-gate1-input.json` for the structured handoff from the same version.
-3. Exports follow the conversation language. To switch, say “Keep this design version and export another copy in Chinese.” Have the agent finish the translation and give you the resulting files. The viewer language switch controls the display.
-
-## 6. Hand the plan to Builder
-
-Save the lab scene with visible models in Unity. You can then close the editor and click **Unity 3D** in the progress page. The browser loads the exported geometry locally. Left-drag to orbit, scroll to zoom, or right-drag to pan. Pick a model in the scene or select it from the list, then click **Focus object** for a closer look. **Fit scene** restores the overview. Click **Workflow details** to return.
-
-The preview updates while the editor is open and shows the last saved version after it closes. It displays mesh geometry, base material colors and world transforms. Use Unity to inspect textures, custom shaders and VR interactions. When upgrading an older workspace, ask the agent to run the `unity-project` command below for that workspace, then open and save the lab scene once in Unity. The button stays disabled until the scene has exported geometry.
-
-On Windows, open the short project path returned by the agent in Unity Hub (for example `Z:\UnityProject`). To resume an existing run, ask the agent to run `builder.py "PACK" unity-project` for the original Builder workspace and continue with the same lab ID. The original workspace holds the gate records.
-
-1. **For the design you just finished**, say “Start building from the version I just confirmed and exported.” Check the design version, Builder workspace, and current gate reported by the agent.
-2. **If you already have a plan**, you can come straight here after step 3. Attach your chosen plan to the project chat, identify the version, and say “Go directly to Builder using this attachment.” The agent reviews the requirements in that plan. If there are several versions, confirm which one to use.
-3. At each gate, review the evidence and anything awaiting your decision. Request a specific change or confirm the result. When asked to inspect the scene, use Unity Hub to open `UnityProject` in the run workspace identified by the agent and follow that gate's instructions. After Gate 6 scene acceptance, the agent archives the selected Gate 5B code. After the student manual, single-lab developer handbook and project handbook update receive joint Gate 8 approval for a linked design, it records problems and fixes in the [knowledge updates directory](knowledge/newknowledge/).
-
 <a id="install-unity"></a>
 
-### First build: install Unity and check compilation
+## 4. Set up Unity for Builder
+
+For design, PDF export, or an existing browser 3D preview, skip to [section 5](#start-design). Builder uses the Unity Editor to compile the project at Gate 4.
+
+### 4A. Install Unity Hub and the Editor
 
 1. **Install Unity Hub.** Open the Unity download page, select your operating system and run the installer. Start the Hub and sign in with your Unity ID. If prompted for a license, open **Settings → Licenses** and activate the license you are entitled to use. [Download Unity Hub](https://unity.com/download)
 2. **Install the project's Editor version.** The Builder project specifies **2022.3.62f3c1**, including the `c1` suffix. Check **Installs** in the Hub. If that exact version is already installed, continue to the next step. Otherwise, select **Install Editor** and look for it. If it is missing from the list on 64-bit Windows, download and run Unity's installer linked below. Then use **Installs → Locate** to select the installed `Editor\Unity.exe` and verify the full version in the list. [Project version](reusable-code/EMVR_Blind_BuilderPack/UnityProject/ProjectSettings/ProjectVersion.txt) · [Windows 64-bit Editor installer](https://download.unitychina.cn/download_unity/1623fc0bbb97/Windows64EditorInstaller/UnitySetup64-2022.3.62f3c1.exe)
-3. **Open your experiment at Gate 4.** Once the agent reports that the scaffold is ready, choose **Projects → Add → Add project from disk** in the Hub. Select the `UnityProject` folder the agent gave you for this run. On Windows, use the short path it provides, such as `Z:\UnityProject`. Open the project with the Editor version above. [Unity Hub project instructions](https://docs.unity.com/en-us/hub/projects-window-reference)
-4. **Check compilation.** Stay in Edit mode and wait for asset import and automatic C# compilation to finish. Open **Window → General → Console**. If the red error count is zero, report that result to the agent to continue Gate 4 acceptance. If there are errors, send the agent the full text of the first red error. You can leave Play and Build unused for this check.
 
-### Set up the Hub language and C# editor
+### 4B. Set up the Hub language and C# editor
 
 1. When you first open the Hub, select **Create account** to register your own Unity ID, or sign in with an existing account. To change the interface language, open **Settings → Appearance → Language** and choose your preferred language.
 2. On Windows, install Visual Studio if you want to read, edit or debug C# scripts there. Open **Visual Studio Installer**, select **Install** (or **Modify** for an existing installation), select **Game development with Unity** under **Workloads**, and apply the change. [Microsoft installation guide](https://learn.microsoft.com/en-us/visualstudio/gamedev/unity/get-started/getting-started-with-visual-studio-tools-for-unity?pivots=windows)
 3. With the project open in Unity, choose **Edit → Preferences → External Tools** and set **External Script Editor** to your Visual Studio installation. Double-click a C# script to check that it opens in Visual Studio.
 
-### Set up VR plug-ins and the device simulator
+### 4C. Set up VR plug-ins and the device simulator
 
-The Builder workspace includes its XR settings. When using Builder, follow the agent's Gate 5A instructions to check the XR rig and simulator in the scene. Use the following manual setup for a Unity 2022.3 project you create yourself. [Builder Gate 5A procedure](reusable-code/EMVR_Blind_BuilderPack/README_USER.md)
+The Builder workspace includes its XR settings. When using Builder, follow the agent's Gate 5A instructions to check the XR rig and simulator in the scene. Use the following manual setup for a Unity 2022.3 project you create yourself. [Builder Gate 5A procedure](reusable-code/EMVR_Blind_BuilderPack/README_USER.md#gate-5a通用基础验证)
 
 1. Open **Edit → Project Settings → XR Plug-in Management**. Select **Install XR Plug-in Management** if prompted. Choose the tab for your target platform and enable **OpenXR**.
 2. Under **XR Plug-in Management → OpenXR**, select **+** in **Interaction Profiles** and add the profile for the target device. The original tutorial uses **Microsoft Hand Interaction Profile** as an example. Choose the profile for the controllers or hand tracking you intend to use.
 3. Open **Window → Package Manager** and find **XR Interaction Toolkit** in the **Unity Registry**. Select **2.6.5** to match the Builder project. On the package's **Samples** tab, click **Import** next to **Starter Assets** and **XR Device Simulator**. [Builder project dependencies](reusable-code/EMVR_Blind_BuilderPack/UnityProject/Packages/manifest.json)
 4. To simulate a headset and controllers with a mouse and keyboard in your own project, enable **Use XR Device Simulator in scenes** under **Edit → Project Settings → XR Interaction Toolkit**. In a Builder scene where Gate 5A already places a simulator, leave automatic insertion off to avoid creating a second one.
 
-### Troubleshoot Unity installation and project import
-
-- **Hub downloads stay queued or fail validation.** Check which item failed in the Hub download list. If only a language pack failed, finish installing the Editor and add the language pack later. If the Editor download repeatedly fails on Windows, use the standalone installer above and register it through **Installs → Locate**.
-- **Unity reports `contains a locked Library`.** Close the Editor instance using that workspace, verify its process has exited, and retry from the Hub. If the project came from an archive and the lock persists, close the Editor, rename the project's `Library` directory to `Library.backup`, then reopen it and let Unity rebuild its import cache. Keep `Assets`, `Packages` and `ProjectSettings` in place.
-
-## 7. Import the Common package into your own Unity project (optional)
+### 4D. Import the Common package into your own Unity project (optional)
 
 1. Builder-generated projects already reference Common. To reuse the components in **your own Unity 2022.3 project**, open that project through Unity Hub.
 2. In the Unity Editor choose **Window → Package Manager**, then **+ → Add package from tarball…** at the top left. In the file picker, open this repository's `unity-package` directory and select [com.emvr.lab-common-0.7.0.tgz](unity-package/com.emvr.lab-common-0.7.0.tgz) directly.
 3. Wait for dependency resolution and compilation. Under **Packages: In Project**, check for **EMVR Lab Common**, version **0.7.0**. If installation fails, check the dependency message in Package Manager and the first error in the Console. [Package details](unity-package/README.md)
 
-## 8. Recover a missing skill, page, or session
+<a id="start-design"></a>
+
+## 5. Start or resume Design
+
+1. In the project chat, select the skill and add this request to the same message:
+
+   > I want to design an ECE329 VR experiment to see how current affects the magnetic field at the center of a long solenoid. Open the live progress page and ask me the first design question.
+
+2. On first use, the app may ask to run Python in the project or open the local page. Check the project and allow the requested operation. Look for a `design_id`, a first question, and the progress page. If a browser tab doesn't open, click the local URL returned by the agent. The four panels show workflow progress, course evidence, design notes, and design checks. The viewer starts in English and has a Chinese language switch at the top right. **Answer questions in the agent chat.**
+3. Try “Which lecture supports that formula?” Then ask “Revise the draft to measure only at the center and hold the number of turns and coil length fixed.” You can accept parts of the draft and revise others in one reply, for example, when discussing the current slider, “Keep the 2 A maximum and change the step size to 0.1 A.” The agent records those decisions together and asks about remaining choices. When the whole plan is ready, confirm it in section 6.
+4. Keep the actual `design_id`. The next time you open the same local project, select the same skill and say “Continue design [paste my ID] from the last draft awaiting my confirmation.” Check that the ID and stage match. If several labs have similar names, choose the original one from the agent's suggestions.
+
+See the [Design stages in section 10](#design-stages) for what to review at each stage.
+
+<a id="export-design"></a>
+
+## 6. Confirm the design and export it
+
+1. At the end of the seven design stages, review the complete draft and say “I confirm the whole design. Please export it.” If the agent identifies a missing item, revise that item and confirm again.
+2. Open the `artifacts` folder the agent returns. Look for `design.pdf` for you to read, `builder-gate1-input.pdf` for Builder to review, and `builder-gate1-input.json` for the structured handoff from the same version.
+3. Exports follow the conversation language. To switch, say “Keep this design version and export another copy in Chinese.” Have the agent finish the translation and give you the resulting files. The viewer language switch controls the display.
+
+<a id="start-builder"></a>
+
+## 7. Start or resume Builder
+
+1. **For the design you just finished**, say “Start building from the version I just confirmed and exported.” Check the design version, Builder workspace, and current gate reported by the agent.
+2. **If you already have a plan**, attach your chosen plan to the project chat, identify the version, and say “Go directly to Builder using this attachment.” The agent reviews the requirements in that plan. If there are several versions, confirm which one to use.
+3. **Resume a build.** Tell the agent, “Resume [lab_id] in the original workspace at [path].” Check the workspace, current gate, and pending task. See the [Builder gates in section 10](#builder-gates) for the checks and approvals.
+
+### Open the project and check compilation at Gate 4
+
+1. **Open your experiment at Gate 4.** Once the agent reports that the scaffold is ready, choose **Projects → Add → Add project from disk** in the Hub. Select the `UnityProject` folder the agent gave you for this run. On Windows, use the short path it provides, as printed by the command below. Open the project with the Editor version installed in section 4. [Unity Hub project instructions](https://docs.unity.com/en-us/hub/projects-window-reference)
+2. **Check compilation.** Stay in Edit mode and wait for asset import and automatic C# compilation to finish. Open **Window → General → Console**. If the red error count is zero, report that result to the agent to continue Gate 4 acceptance. If there are errors, send the agent the full text of the first red error. You can leave Play and Build unused for this check.
+
+**Reopen the same project after restarting Windows.** When first setting up the project or migrating from the old Z: drive, save and close the old project. Run this command in PowerShell at the repository root. For a build created from Design, substitute your lab ID. For a standalone Builder run, replace the ID with the quoted full path of the workspace containing `UnityProject`.
+
+```powershell
+.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/builder.py ece329_solenoid_current unity-project
+```
+
+Copy the printed path and select **Projects → Add → Add project from disk** in Unity Hub. After a restart, open that same Hub entry. This persistent directory junction in your user profile points to the original project, preserving the scene and gate records. If several runs share a lab ID, rerun the command with the intended workspace path from the list.
+
+### View the scene in the browser
+
+Save the lab scene with visible models in Unity. You can then close the editor and click **Unity 3D** in the progress page. The browser loads the exported geometry locally. Left-drag to orbit, scroll to zoom, or right-drag to pan. Pick a model in the scene or select it from the list, then click **Focus object** for a closer look. **Fit scene** restores the overview. Click **Workflow details** to return.
+
+The preview updates while the editor is open and shows the last saved version after it closes. It displays mesh geometry, base material colors and world transforms. Use Unity to inspect textures, custom shaders and VR interactions. When upgrading an older workspace, ask the agent to run the `unity-project` command above for that workspace, then open and save the lab scene once in Unity. The button stays disabled until the scene has exported geometry.
+
+## 8. Manual operation and troubleshooting
 
 1. **Skill missing from the picker?** Check that your app opened the root from step 1. In the project skills directory for your app, check the `emvr-lab-workflow/SKILL.md` entry, including both `---` delimiters around the name and description. Check for an accidental `.txt` extension, save, and start a fresh project chat. Restart the client if needed. To resume while checking discovery, you can explicitly ask it to “Read `emvr-lab-workflow/SKILL.md` from the repository root and continue design [my ID].”
 2. **Missing module or knowledge files?** Rerun the knowledge query in step 2. If it succeeds, have the agent retry using the same `.venv` interpreter and the repository root as its working directory.
 3. **Existing progress page won't open?** Ask the agent to reopen the same ID. To check manually from the root on Windows, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/viewer.py open DESIGN_ID`, substitute your actual ID, and open the returned `url`. Run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py show DESIGN_ID` to see the saved progress. On macOS use `.venv/bin/python` at the start of each command.
 4. **Moved computers?** Sessions, handoff files, and Builder workspaces are normally in `emvr-lab-workflow/state/`. Older checkouts may use `state/` at the repository root. Transfer the original state directory, repeat steps 2–3 on the new machine, and resume using your original ID.
+5. **Unity Hub no longer lists the project?** Ask the agent to locate the original workspace, then use the lab ID or workspace path for your type of run as described in [section 7](#start-builder).
+
+### Troubleshoot Unity installation and project import
+
+- **Hub downloads stay queued or fail validation.** Check which item failed in the Hub download list. If only a language pack failed, finish installing the Editor and add the language pack later. If the Editor download repeatedly fails on Windows, use the standalone installer in [section 4](#install-unity) and register it through **Installs → Locate**.
+- **Unity reports `contains a locked Library`.** Close the Editor instance using that workspace, verify its process has exited, and retry from the Hub. If the project came from an archive and the lock persists, close the Editor, rename the project's `Library` directory to `Library.backup`, then reopen it and let Unity rebuild its import cache. Keep `Assets`, `Packages` and `ProjectSettings` in place.
 
 <details>
 <summary>Optional: run the same workflow manually</summary>
@@ -263,7 +285,7 @@ Note your current `design_id`. If you have started Builder, also note the `lab_i
 
 1. Select `main` in the [project repository](https://github.com/yzhao05/ece329-vr-lab-workflow) and choose **Code → Download ZIP**, or get the updated ZIP from your instructor. Extract it into a separate temporary folder. Locate the directory that contains `README.md`, `emvr-lab-workflow`, and `web` together.
 2. Close terminals and agent project windows using the old folder. From its parent directory, rename the old folder as a backup (for example, append `-backup`). Place the newly extracted project root at the **exact original path**. This keeps existing Builder workspace paths and Unity Hub project locations usable.
-3. Copy **your local experiment data** from the backup to the same relative locations in the new installation. Copy the entire `emvr-lab-workflow/state/` directory, or restore `state/` at the project root if that was your previous location. If you created standalone runs under `reusable-code/EMVR_Blind_BuilderPack/RebuildWorkspaces/`, copy those run directories too. Continue using the original paths for external workspaces and custom state directories.
+3. Copy **your local experiment data** from the backup to the same relative locations in the new installation. Copy the entire `emvr-lab-workflow/state/` directory, or restore `state/` at the project root if that was your previous location. If the backup contains `web/data/`, copy that directory too. It holds the published local progress snapshots and the pointer to your most recent experiment. If you created standalone runs under `reusable-code/EMVR_Blind_BuilderPack/RebuildWorkspaces/`, copy those run directories too. Continue using the original paths for external workspaces and custom state directories.
 4. Merge any personal additions in `knowledge/newknowledge/`, `reusable-code/newcode/`, or other directories where you added material. Compare files with matching names before replacing them. Restore your local `.env` configuration if needed. In the new root, follow step 2 to create a fresh `.venv`, then step 3 to create the skill entry for your client. Keep your backup until you have verified your progress.
 
 If your custom state directory, viewer data directory, or standalone Builder workspace was inside the old project folder, restore it from the backup at the same relative path.
@@ -289,3 +311,43 @@ If your custom state directory, viewer data directory, or standalone Builder wor
    ```
 
 2. Once the query returns `course` and `formulas`, open a fresh agent chat in the updated project, select the skill, and say “Resume experiment [original design_id], open its progress page, and tell me the current gate and pending task.” For standalone Builder, say “Resume [lab_id] in the original workspace at [full path].” Check that the ID, gate, and pending task match your previous session. On Windows, use the short path returned by the agent when you next open that workspace in Unity.
+
+## 10. Design and Builder workflows
+
+<a id="design-stages"></a>
+
+### The seven Design stages
+
+Discuss the draft in the agent chat and follow the current stage on the progress page. You can answer related questions together. For example, give the experiment a title, accept the suggested lab ID, and specify what students will measure in one reply.
+
+1. **Refine the experiment idea.** Describe the phenomenon and what students should learn. Use the lecture references to agree on a research question, a model, and an expected trend.
+2. **Define variables and conditions.** Decide what students can change, what they measure, and what stays fixed. For example, vary the current while keeping the probe at the center of the solenoid.
+3. **Outline the experimental procedure.** Walk through the draft from the student's perspective, from entering the scene and adjusting controls to recording data and resetting the experiment.
+4. **Plan the data display.** Choose readouts, units, and graphs. Specify when the readout updates and when a point is added to the plot.
+5. **Interpret possible results.** Discuss the expected pattern, how students should explain it, and how to judge whether the experiment meets its acceptance criteria.
+6. **Review value, feasibility, and limitations.** Explain what VR helps students observe, identify the model's assumptions, and review the proposed Unity implementation.
+7. **Review the complete EMVR design.** Check that revisions carry through to the procedure, graphs, and acceptance criteria. Confirm the draft and export that version using [section 6](#export-design).
+
+<a id="builder-gates"></a>
+
+### The Builder gates in order
+
+At each gate, check the current gate, verification results, and outstanding items reported by the agent. Each approval advances one gate. When a check requires Unity, use the project path supplied by the agent.
+
+1. **Gate 0 · Verify the workspace.** Check the input plan and workspace and establish the baseline for protected files.
+2. **Gate 1 · Confirm requirements.** Review the build brief and supply any missing course, manual, or grading details together.
+3. **Gate 2 · Prepare interface contracts.** Check that the configuration describes the agreed parameters, interactions, data recording, and acceptance criteria.
+4. **Gate 3 · Review the implementation design.** Review the planned scene, components, and tests against the experiment requirements.
+5. **Gate 4 · Generate the project scaffold.** Open and refresh the project in Unity and report the compilation result from the Console.
+6. **Gate 5 · Verify the foundation and experiment implementation.** In 5A, check the room, lighting, and basic interactions. In 5B, the agent implements the lab-specific model, controls, and measurements. Follow the requested tests.
+7. **Gate 6 · Accept the Unity scene.** Try the experiment in Unity against the acceptance criteria and report the results. After acceptance, the agent archives the selected Gate 5B source files in `reusable-code/newcode/`. Before using those files in another project, check the [component dependencies](reusable-code/README.md).
+8. **Gate 8 · Complete the handbooks.** In 8A, review this lab's student and developer handbooks. In 8B, review the new material in the project master handbook. When both are ready, follow the [final step](#knowledge-archive) to approve them and verify the knowledge archive.
+
+<a id="knowledge-archive"></a>
+
+## 11. Final step: verify the knowledge archive
+
+1. After reviewing both parts of Gate 8, tell the agent, “I approve Gate 8 for this run. Please give me the archive path.”
+2. The agent writes the retrospective when it records that approval. One Gate 8 approval covers both handbook acceptance and archiving. A linked run covers both Design and Builder. A standalone Builder run covers the build. The record should describe actual issues, what triggered them, how they were handled, what was verified, and any remaining limitations. If there were no known issues, the record should say so.
+3. Open the Markdown file identified by `knowledge_update` and check the archived notes. Paths are relative to the repository root. Linked runs use `knowledge/newknowledge/<design_id>/<design-fingerprint>.md`. Standalone Builder runs use `knowledge/newknowledge/builder/<lab_id>/<acceptance-fingerprint>.md`. If the page shows “Accepted, retrospective pending”, ask the agent to resume the same workspace and retry archiving with the existing approval until it returns a file you can open.
+4. **Upload the two folders prepared by the agent.** When approving the Gate 8 handbooks, you can add “Use Alex as my submission name.” The agent prepares `Alex_newcode` (source for this build) and `Alex_newknowledge` (this run’s knowledge updates) and returns both local paths. The lab ID is the default name. Open the folders and send them to the maintainer directly or as two ZIP files. If the page shows “Accepted, upload folders pending”, ask the agent to retry the same handoff. It reuses your submission name and list of additional files. The page shows completion once both folders are ready.

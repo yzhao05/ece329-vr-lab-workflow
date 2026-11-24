@@ -108,7 +108,83 @@ def run_directory(state, key, fingerprint):
     return state / "builds" / name / BASE.name
 
 
-def approve_user_gate(pack, lab_id, gate, note, turn_id):
+def recap_path(pack, lab_id, status):
+    contract = pack / "LabSpecs" / valid_id(lab_id) / "design-input/builder-gate1-input.json"
+    document = json.loads(contract.read_text(encoding="utf-8-sig")).get("document", {}) if contract.is_file() else {}
+    if document.get("source_design_id"):
+        folder = Path(valid_id(document["source_design_id"]))
+        fingerprint = (document.get("source_design") or {}).get("fingerprint")
+    else:
+        folder = Path("builder") / lab_id
+        fingerprint = (status.get("evidence") or {}).get("compile_content_digest")
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint):
+        raise ValueError("Cannot locate the accepted revision for the Gate 8 retrospective.")
+    return Path("knowledge/newknowledge") / folder / (fingerprint + ".md")
+
+
+def upload_marker(pack, lab_id):
+    return pack / "BuildEvidence" / valid_id(lab_id) / "approval-turns/gate8-upload.pending.json"
+
+
+def remember_upload(pack, lab_id, digest, request):
+    path = upload_marker(pack, lab_id)
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if saved.get("digest") != digest:
+        saved = {"digest": digest}
+    saved.update({key: value for key, value in request.items() if value is not None})
+    write_json(path, saved)
+    return saved
+
+
+def finish_gate8(pack, lab_id, note, receipt, notes, upload_request):
+    # Called under the approval lock. Keep a recoverable draft until publication
+    # succeeds, including across a crash just after the native gate is approved.
+    status = json.loads(labflow(pack, "status", "--lab-id", lab_id))
+    rel = recap_path(pack, lab_id, status)
+    pending = receipt.parent / "gate8-retrospective.pending.json"
+    prior = json.loads(receipt.read_text(encoding="utf-8")) if receipt.exists() else None
+    if prior is not None and prior != {"gate": 8, "note": note}:
+        raise ValueError("This user message is already bound to a different approval.")
+    target = ROOT / rel
+    if status["workflow_complete"] and not pending.exists() and target.is_file() and target.stat().st_size:
+        if upload_request is not None:
+            remember_upload(pack, lab_id, status["evidence"]["compile_content_digest"], upload_request)
+        return f"Gate 8 completed. knowledge_update: {rel.as_posix()}"
+    complete = status["workflow_complete"]
+    draft = json.loads(pending.read_text(encoding="utf-8")) if pending.exists() else {}
+    state_hash = hashlib.sha256((pack / "LabSpecs" / lab_id / "workflow_state.json").read_bytes())
+    for record in sorted((receipt.parent.parent / "handbooks").glob("*.json")):
+        state_hash.update(record.name.encode("utf-8") + b"\0" + hashlib.sha256(record.read_bytes()).digest())
+    state_digest = state_hash.hexdigest()
+    retry = (draft.get("receipt") == receipt.name and draft.get("state_digest") == state_digest)
+    if not complete:
+        if prior is not None and not retry:
+            raise ValueError("Gate 8 requires a fresh user approval for its current state.")
+        if status.get("current_gate") != 8 or not status.get("gate_ready_for_approval"):
+            raise ValueError("Gate 8 is not ready for approval: " + "; ".join(status.get("gate_blockers", [])))
+    if draft and (complete or retry):
+        if draft["path"] != rel.as_posix():
+            raise ValueError("Pending retrospective does not match the accepted revision.")
+        content = draft["notes"]
+    else:
+        content = notes.read_text(encoding="utf-8-sig").strip() if notes else ""
+        if not content:
+            raise ValueError("Gate 8 needs the agent's nonempty UTF-8 retrospective via --notes FILE.")
+        write_json(pending, {"path": rel.as_posix(), "notes": content, "receipt": receipt.name, "state_digest": state_digest})
+    if upload_request is not None:
+        remember_upload(pack, lab_id, status["evidence"]["compile_content_digest"], upload_request)
+    if not complete:
+        write_json(receipt, {"gate": 8, "note": note})
+        labflow(pack, "approve-gate", "--lab-id", lab_id, "--gate", "8", "--note", note)
+        accepted = json.loads(labflow(pack, "status", "--lab-id", lab_id))
+        if not accepted.get("workflow_complete") or recap_path(pack, lab_id, accepted) != rel:
+            raise ValueError("Gate 8 acceptance changed. Revalidate the current revision before publishing the retrospective.")
+    write_text(target, content + "\n")
+    pending.unlink()
+    return f"Gate 8 completed. knowledge_update: {rel.as_posix()}"
+
+
+def approve_user_gate(pack, lab_id, gate, note, turn_id, notes=None, upload_request=None):
     """Bind a real user message to one gate, including across CLI restarts."""
     if not turn_id or not turn_id.strip() or len(turn_id) > 256:
         raise ValueError("Provide the same --turn-id for every action from this user message.")
@@ -118,6 +194,8 @@ def approve_user_gate(pack, lab_id, gate, note, turn_id):
     receipts = pack / "BuildEvidence" / lab_id / "approval-turns"
     receipt = receipts / (hashlib.sha256(turn_id.encode()).hexdigest() + ".json")
     with lock(receipts / "approve.lock"):
+        if gate == 8:
+            return finish_gate8(pack, lab_id, note, receipt, notes, upload_request)
         if receipt.exists():
             previous = json.loads(receipt.read_text(encoding="utf-8"))
             if previous != {"gate": gate, "note": note}:
@@ -134,6 +212,14 @@ def approve_user_gate(pack, lab_id, gate, note, turn_id):
 
 def builder_progress(data):
     gate = data.get("current_gate")
+    if data.get("stage") == "acceptance_revalidation":
+        return "Builder · Gate 6 · 场景需要重新验收"
+    if data.get("stage") == "handbooks_revalidation":
+        return "Builder · Gate 8 · 手册需要重新验证"
+    if data.get("retrospective_pending"):
+        return "Builder · Gate 8 · 验收通过，待归档复盘"
+    if data.get("upload_pending"):
+        return "Builder · Gate 8 · 验收通过，上传副本待整理"
     if data.get("workflow_complete"):
         return "Builder · Gate 8 · 已完成"
     if data.get("migration_required") or gate is None:
@@ -146,11 +232,38 @@ def builder_progress(data):
     return f"Builder · Gate {gate} · {name} · {status}"
 
 
+def unified_builder_status(pack, data):
+    if data.get("workflow_complete"):
+        lab_id = data["lab_id"]
+        rel = recap_path(pack, lab_id, data)
+        target = ROOT / rel
+        pending = pack / "BuildEvidence" / lab_id / "approval-turns/gate8-retrospective.pending.json"
+        if pending.exists() or not target.is_file() or not target.stat().st_size:
+            data.setdefault("approved_gates", data.get("gate_sequence", []))
+            data.update(workflow_complete=False, retrospective_pending=True, stage="retrospective_pending",
+                        current_gate=8, next_action="Archive the Gate 8 retrospective using the recorded approval.")
+        else:
+            data["knowledge_update"] = rel.as_posix()
+            marker = upload_marker(pack, lab_id)
+            try:
+                saved = json.loads(marker.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                saved = None
+            if saved and saved["digest"] == data["evidence"]["compile_content_digest"]:
+                data.setdefault("approved_gates", data.get("gate_sequence", []))
+                data.update(workflow_complete=False, upload_pending=True, stage="upload_pending",
+                            current_gate=8, next_action="Retry prepare-upload for the accepted build.")
+    return data
+
+
 def read_builder_status(pack, lab_id, fingerprint=None):
-    data = json.loads(labflow(pack, "status", "--lab-id", lab_id))
+    data = unified_builder_status(pack, json.loads(labflow(pack, "status", "--lab-id", lab_id)))
     fields = ("lab_id", "current_gate", "current_gate_name", "workflow_complete", "accepted",
               "gate_ready_for_approval", "gate8_step", "migration_required", "stage")
     summary = {key: data.get(key) for key in fields}
+    for key in ("retrospective_pending", "upload_pending", "knowledge_update"):
+        if key in data:
+            summary[key] = data[key]
     summary["status_line"] = builder_progress(data)
     # Older run packs predate the normalized approval list. current_gate is
     # the first gate their own validator considers unapproved.

@@ -52,7 +52,8 @@ def archive(pack, lab, action, files=(), destination=ROOT / "reusable-code/newco
             if not selected or any(path not in now or now[path] == before.get(path) for path in selected):
                 raise ValueError("Select new or modified Gate 5B source files relative to UnityProject/Assets.")
             write_json(selection, selected)
-            return {"selected": selected}
+            changed = {path for path, digest in now.items() if digest != before.get(path)}
+            return {"selected": selected, "unselected_changes": sorted(changed.difference(selected))}
         if not selection.is_file():
             raise ValueError("Missing Gate 5B source selection.")
         selected = json.loads(selection.read_text(encoding="utf-8"))

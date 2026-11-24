@@ -12,4 +12,6 @@ dist/
 .env
 .env.*
 !.env.example
+/README.maintainer.md
+/README.maintainer.en.md
 

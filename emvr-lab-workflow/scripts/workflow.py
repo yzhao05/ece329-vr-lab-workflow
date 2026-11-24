@@ -269,18 +269,20 @@ def main():
         if args.cmd in {"export", "builder-init"}:
             result.update(handoff(engine, design, state, args.cmd == "builder-init", args.language, args.translations))
         view = project_view(state, design)
-        result["status_line"] = (view["builder"]["status_line"] if args.cmd == "builder-init" and view.get("builder")
+        result["status_line"] = (view["builder"]["status_line"] if args.cmd in {"show", "builder-init"} and view.get("builder")
                                  else design_status_line(design, reply))
         if args.cmd == "retrospective":
-            if not (design.get("report_ready") and (view.get("builder") or {}).get("workflow_complete")):
+            builder = view.get("builder") or {}
+            if builder.get("retrospective_pending"):
+                raise ValueError("Finish the pending Gate 8 archive with builder.py approve-gate --gate 8 --notes FILE.")
+            if not design.get("report_ready") or not builder.get("knowledge_update"):
                 raise ValueError("Complete the confirmed Design and all Builder gates including Gate 8 first.")
-            notes = args.notes.read_text(encoding="utf-8-sig").strip()
-            if not notes:
-                raise ValueError("The retrospective cannot be empty.")
-            rel = Path("knowledge/newknowledge") / key / (view["builder_source_fingerprint"] + ".md")
-            from workspace import write_text
-            write_text(ROOT / rel, notes + "\n")
-            return {"knowledge_update": rel.as_posix()}
+            # Older hosts may replay this command after Gate 8. Only the
+            # gate approval publishes the retrospective for the accepted run.
+            rel = builder["knowledge_update"]
+            if args.notes.read_text(encoding="utf-8-sig").strip() != (ROOT / rel).read_text(encoding="utf-8-sig").strip():
+                raise ValueError("Gate 8 already archived a different retrospective at " + rel)
+            return {"knowledge_update": rel}
         if args.cmd in ("create", "turn", "show"):
             saved = engine.store.get(key)
             pending = current_pending_action(saved) or {}
