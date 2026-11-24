@@ -59,11 +59,11 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 
 Gate 6 验收后，Gate 8A 先为本实验制作学生手册和开发者手册。Gate 8B 增补项目总手册时，优先使用用户指定的当前原稿；首次制作可使用交付根自带的 `knowledge/sources/EM VR Lab Development Handbook.docx`。从交付根解析为绝对路径，作为 `handbooks.py stage-master --source` 的输入。若本项目已有增补后的总手册，续用该版，保留既有章节。增补文件写入当前工作区的 `BuildEvidence/<lab_id>/handbooks/project-master/`，保留输入原稿。
 
-用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。Gate 8 还须加下文的 `--notes` 参数，在这次批准中完成复盘归档。Gate 6 通过这个入口同步发布 Gate 5B 已选源码，核对返回的 `archive`。若原工作区已记录 Gate 6 验收但复制失败，按 Builder 规程重试 `code_archive.py publish`，沿用原验收。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
+用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。Gate 8 还须加下文的 `--notes` 参数，在这次批准中完成复盘归档。Gate 6 通过这个入口同步发布 Gate 5B 已选源码，核对返回的 `archive`。若归档提示同一验收指纹下的文件内容冲突，先对照已验收版本核对两份文件，再恢复归档。若原工作区已记录 Gate 6 验收但复制失败，按 Builder 规程重试 `code_archive.py publish`，沿用原验收。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
 
-记录工作区的实际绝对路径 PACK。在交付根用项目解释器执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`。规程中的其他 labflow 子命令也通过这个入口转发，适用于已经冻结 Gate 0 基线的旧工作区。若是旧包，请使用更新后的交付根执行，保留原 PACK 和实验编号。
+首次交接或恢复 Builder 后，把构建编号 `lab_id` 和 Builder 工作区完整路径 `builder_workspace`（下文的 PACK）交给用户保存。关联 Design 时同时给出 `design_id`；这三项可直接读取 `builder-init` 的成功结果。独立 Builder 沿用实际建档的 `lab_id` 和 PACK。在交付根用项目解释器执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`。规程中的其他 labflow 子命令也通过这个入口转发，适用于已经冻结 Gate 0 基线的旧工作区。若是旧包，请使用更新后的交付根执行，保留原 PACK 和实验编号。
 
-在第一次要求用户打开 Unity 前，从交付根执行 `python emvr-lab-workflow/scripts/builder.py "PACK" unity-project`。Windows 会在当前用户的 `%LOCALAPPDATA%\EMVR` 中创建可跨重启复用的目录联接，向用户提供命令输出的完整路径，在 Unity Hub 中添加一次。对于 Design 交接创建的运行，可用实验编号代替 PACK 查找工程；独立 Builder 使用实际 PACK 路径。若有多个匹配，先确认具体工作区。使用自定义状态目录时在实验编号前加 `--state-dir "STATE"`。旧条目已打开时，先保存并关闭，再从新入口打开。Gate 记录、归档和完整性检查继续使用原 PACK。遇到 Unity 重建空 Plugins 目录时保留目录及其 .meta，并复查原基线。
+在第一次要求用户打开 Unity 前，从交付根执行 `python emvr-lab-workflow/scripts/builder.py "PACK" unity-project`。Windows 会在当前用户的 `%LOCALAPPDATA%\EMVR` 中创建可跨重启复用的目录联接，向用户提供命令输出的完整路径，在 Unity Hub 中添加一次。对于 Design 交接创建的运行，可用构建编号 `lab_id` 代替 PACK 查找工程；独立 Builder 使用实际 PACK 路径。若有多个匹配，先确认具体工作区。使用自定义状态目录时在构建编号或 PACK 前加 `--state-dir "STATE"`。旧条目已打开时，先保存并关闭，再从新入口打开。Gate 记录、归档和完整性检查继续使用原 PACK。遇到 Unity 重建空 Plugins 目录时保留目录及其 .meta，并复查原基线。
 
 
 详细规程集中在 [builder-workflow.md](../reusable-code/EMVR_Blind_BuilderPack/.agents/skills/build-unity-vr-lab-blind/builder-workflow.md)。选定工作区后读取**该工作区内**的同名文件，从 **Create or resume a run** 及当前 Gate 开始。该文件还说明主 Agent 应在何时从交付根调用代码归档工具，固定目标为 `reusable-code/newcode/`。
@@ -90,7 +90,7 @@ python emvr-lab-workflow/scripts/builder.py "PACK" approve-gate --lab-id LAB_ID 
 
 与设计关联的复盘存入 `knowledge/newknowledge/<design_id>/<设计指纹>.md`；独立 Builder 使用 `knowledge/newknowledge/builder/<lab_id>/<验收版本指纹>.md`。草稿由主 Agent 在工作区证据目录准备，只记录与实验有关的事实。旧版已验收的运行可用上述入口补档；状态为待归档时无需再次向用户请求批准。
 
-**Gate 8 的最后一步由主 Agent 整理维护者上传副本。** 将提交名与手册确认一起收集，已知提交名时给上方命令加 `--submitter "名字"`，未指定则沿用实验编号。默认带上本次复盘；本轮另有新增知识文件时，对每个文件追加一次 `--knowledge-file "相对于 knowledge/newknowledge 的路径"`。沿用本次构建使用的 `--state-dir`（如有）。命令会在状态目录的 `uploads/<lab_id>/` 中生成两个独立的本地上传副本。对照开发手册核对该版本的源码和本地依赖，遇到项目特有的其他源码类型时由 Agent 补入副本并保留相对路径与元数据。核对两个文件夹后给出 `newcode`、`newknowledge` 的完整路径、实验编号和关联的设计编号，让用户自行上传或压缩。手册和复盘已验收但副本整理失败时，说明“Gate 8 已验收，上传副本待整理”，修正错误后运行 `builder.py "PACK" prepare-upload --lab-id LAB_ID`，沿用原提交名及额外知识文件，无需再次批准。[用户提交步骤](../README.md#knowledge-archive)
+**Gate 8 的最后一步由主 Agent 整理维护者上传副本。** 将提交名与手册确认一起收集，已知提交名时给上方命令加 `--submitter "名字"`，未指定则沿用构建编号 `lab_id`。默认带上本次复盘；本轮另有新增知识文件时，对每个文件追加一次 `--knowledge-file "相对于 knowledge/newknowledge 的路径"`。沿用本次构建使用的 `--state-dir`（如有）。命令会在状态目录的 `uploads/<lab_id>/` 中生成两个独立的本地上传副本。对照开发手册核对该版本的源码和本地依赖，遇到项目特有的其他源码类型时由 Agent 补入副本并保留相对路径与元数据。核对两个文件夹后给出 `newcode`、`newknowledge` 的完整路径、实验编号和关联的设计编号，让用户自行上传或压缩。手册和复盘已验收但副本整理失败时，说明“Gate 8 已验收，上传副本待整理”，修正错误后运行 `builder.py "PACK" prepare-upload --lab-id LAB_ID`，沿用原提交名及额外知识文件，无需再次批准。[用户提交步骤](../README.md#knowledge-archive)
 
 **新增知识固定写入交付根下的 `knowledge/newknowledge/`。** 原 `knowledge/extensions/` 的内容继续供检索。新增 Markdown、TXT、JSON，或附同名文字索引的 PDF。新建集成 Builder 工作区会得到当时的 `KnowledgeBase/extensions/newknowledge/` 副本。规则审阅保存在所用状态目录的 `design.sqlite3`，知识库复盘供以后检索参考。
 

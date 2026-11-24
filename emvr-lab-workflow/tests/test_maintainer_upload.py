@@ -29,6 +29,7 @@ def test_gate8_cli_creates_both_uploads_and_retries_without_approval(tmp_path, l
         write(spec / "design-input/builder-gate1-input.json", json.dumps({"document": {
             "source_design_id": "design_123", "source_design": {"fingerprint": "b" * 64}}}))
     status = {"lab_id": lab, "workflow_complete": False, "current_gate": 8,
+              "accepted": True, "approved_gates": [0, 1, 2, 3, 4, 5, 6],
               "gate_ready_for_approval": True, "evidence": {"compile_content_digest": digest}}
     write(pack / "status.json", json.dumps(status))
     write(pack / "Tools/labflow/labflow.py", """
@@ -44,8 +45,10 @@ print(json.dumps(s))
 """)
     notes = tmp_path / "notes.md"
     write(notes, "Lab retrospective")
-    write(tmp_path / "reusable-code/newcode" / version / "Scripts/Lab.cs", "archived")
     project = pack / "UnityProject"
+    write(project / "Assets/Scripts/Lab.cs", "archived")
+    write(pack / "BuildEvidence" / lab / "gate5b-archive/selection.json", '["Scripts/Lab.cs"]')
+    write(tmp_path / "web/stages.json", '{"builder":[{"gate":8,"title":"Handbooks"}]}')
     write(project / "Assets/Editor/Build.cs", "editor script")
     write(project / "Assets/Editor/Build.cs.meta", "editor guid")
     write(project / "Assets/Editor.meta", "directory guid")
@@ -65,6 +68,13 @@ print(json.dumps(s))
     def run(args):
         return subprocess.run(prefix + args, capture_output=True, encoding="utf-8")
 
+    # Retry publication for the already accepted Gate 6. The agent reads one JSON result.
+    gate6 = run(["approve-gate", "--lab-id", lab, "--gate", "6",
+                 "--turn-id", "u6", "--note", "accepted"])
+    assert gate6.returncode == 0, gate6.stderr
+    published = json.loads(gate6.stdout)
+    assert (Path(published["archive"]) / "Scripts/Lab.cs").read_text() == "archived"
+    assert "Gate 8" in published["status_line"]
     assert run(retry).returncode != 0
     assert run(approve).returncode != 0  # Acceptance succeeds, missing supplement prevents publication.
     assert json.loads((pack / "status.json").read_text())["workflow_complete"]

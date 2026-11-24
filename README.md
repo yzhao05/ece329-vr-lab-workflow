@@ -4,13 +4,15 @@
 
 以长螺线管实验为例，首次使用先完成第 1～3 节。只做设计或导出 PDF，可直接到[第 5 节开始设计](#start-design)。要在 Unity 中搭建实验，请先完成[第 4 节的 Unity 配置](#install-unity)。已有方案或要继续搭建，见[第 7 节](#start-builder)。
 
-已经安装过？直接看[用 Git 更新](#update-git)或[用 ZIP 更新](#update-zip)。
+**环境已配置好？** 在原项目中新开 Agent 聊天，[开始或继续设计](#start-design)，或[从已有方案开始搭建](#start-builder)。需要升级版本时，再看[第 9 节的更新步骤](#update)。
 
 ## 1. 下载项目，打开正确的文件夹
 
 1. 选择一种下载方式。使用 Git 时，在要存放项目的父文件夹打开终端，运行 `git clone https://github.com/yzhao05/ece329-vr-lab-workflow.git`。使用 ZIP 时，在[项目仓库](https://github.com/yzhao05/ece329-vr-lab-workflow)点 **Code → Download ZIP**。Windows 下右键 ZIP 并选“全部解压”；macOS 下双击解压。如果老师已经发了完整文件夹，直接打开它。
 2. 进入能同时看到 `README.md`、`emvr-lab-workflow`、`knowledge`、`web`、`unity-package` 和 `reusable-code` 的那一层。这就是下面说的**仓库根目录**。请保留这些文件夹的相对位置。
 3. **Windows**：在这个文件夹的资源管理器地址栏输入 `powershell` 并按回车。**macOS**：打开“终端”，输入 `cd `（末尾留一个空格），把这个文件夹拖入终端，再按回车。后面的安装命令都在这个窗口运行。
+
+**第一次使用时，在 Agent 中把这个项目根目录选为工作区。** 第 3 节会带你在所用的桌面端选中它。以后开始新实验或继续旧实验，都可以在同一项目下新开聊天。要接着做上次的设计，告诉 Agent 原来的 `design_id`。把已确认的设计交给 Builder 时，Agent 会为这次实验创建或恢复专属的构建工作区。到 Gate 4，再在 Unity Hub 中打开 Agent 给出的 `UnityProject` 路径。
 
 ## 2. 安装 Python 和设计引擎
 
@@ -33,7 +35,7 @@
    .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
    ```
 
-3. 看到包含 `course` 和 `formulas` 的输出，就可以配置桌面 Agent。设计引擎默认使用宿主 Agent，无需单独设置模型 API 密钥。
+3. 在输出的 `course` 中找到 `formulas` 列表，并看到长螺线管公式 `long_solenoid_field`，就可以配置桌面 Agent。设计引擎默认使用宿主 Agent，无需单独设置模型 API 密钥。
 
 ## 3. 在桌面 Agent 中加载 Skill（四选一）
 
@@ -56,8 +58,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3A. Codex
 
-1. 打开 Codex 桌面端并登录。在侧栏的项目区新建或打开本地项目，选第 1 节下载的仓库根文件夹。如果当前界面从已有项目进入，打开项目菜单 **Edit project → Add folder**，选中该文件夹并将其作为当前工作目录。选择在本机文件夹中工作。
-2. 此客户端的项目级入口是 `.agents/skills/emvr-lab-workflow/SKILL.md`。在第 1 步打开的终端中，按你的系统执行下面两行，打开入口文件。
+1. 打开 Codex 桌面端并登录。在侧栏的项目区新建或打开本地项目，选第 1 节找到的仓库根目录。**这一步就是选择 Codex 的工作区。** 如果从已有项目进入，打开项目菜单 **Edit project → Add folder**，选中同一文件夹并将其作为当前工作目录。
+2. 此客户端的项目级入口是 `.agents/skills/emvr-lab-workflow/SKILL.md`。在第 1 节打开的仓库根目录终端中，按你的系统执行下面两行，打开入口文件。
 
    **Windows · PowerShell**
 
@@ -77,8 +79,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3B. Claude Desktop
 
-1. 打开 Claude 桌面端，登录后切到 **Code**。新建会话，在输入框旁的环境选择器选 **Local** 下的本机，再点旁边的文件夹选择器 **Open folder…**，选仓库根目录。如果界面提供工作树隔离，使用原文件夹，以便继续读取同一份实验记录。
-2. 此客户端的项目级入口是 `.claude/skills/emvr-lab-workflow/SKILL.md`。在第 1 步打开的终端中，按你的系统执行下面两行，打开入口文件。
+1. **选择 Claude Code 会话的工作区。** 打开 Claude 桌面端，登录后切到 **Code** 并新建会话。在输入框旁的环境选择器中选 **Local** 下的本机，再点旁边的 **Open folder…**，选中第 1 节找到的仓库根目录。这个文件夹就是本次会话的工作区。如果界面提供工作树隔离，使用原文件夹，以便继续读取同一份实验记录。
+2. 此客户端的项目级入口是 `.claude/skills/emvr-lab-workflow/SKILL.md`。在第 1 节打开的仓库根目录终端中，按你的系统执行下面两行，打开入口文件。
 
    **Windows · PowerShell**
 
@@ -98,8 +100,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3C. Cursor
 
-1. 打开 Cursor 桌面端，用 **Open Folder** 打开仓库根目录，登录并打开该项目的本地 Agent 对话。
-2. 此客户端的项目级入口是 `.cursor/skills/emvr-lab-workflow/SKILL.md`。在第 1 步打开的终端中，按你的系统执行下面两行，打开入口文件。
+1. **选择 Cursor Agent 的工作区。** 打开 Cursor，点 **Open Folder**，选中第 1 节找到的仓库根目录。登录后，在打开该文件夹的窗口里开始本地 Agent 对话。
+2. 此客户端的项目级入口是 `.cursor/skills/emvr-lab-workflow/SKILL.md`。在第 1 节打开的仓库根目录终端中，按你的系统执行下面两行，打开入口文件。
 
    **Windows · PowerShell**
 
@@ -119,8 +121,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3D. VS Code + GitHub Copilot
 
-1. 打开 VS Code，点 **File → Open Folder…** 并选仓库根目录。从 Copilot 图标打开 Chat，按提示登录 GitHub，选择能操作本地文件和终端的 Copilot Agent 会话。
-2. 此客户端的项目级入口是 `.github/skills/emvr-lab-workflow/SKILL.md`。在第 1 步打开的终端中，按你的系统执行下面两行，打开入口文件。
+1. **选择 GitHub Copilot 使用的工作区。** 在 VS Code 中点 **File → Open Folder…**，选中第 1 节找到的仓库根目录。Copilot 使用这个窗口的工作区。在同一窗口点 Copilot 图标打开 Chat，按提示登录 GitHub，选择能操作本地文件和终端的 Agent 会话。
+2. 此客户端的项目级入口是 `.github/skills/emvr-lab-workflow/SKILL.md`。在第 1 节打开的仓库根目录终端中，按你的系统执行下面两行，打开入口文件。
 
    **Windows · PowerShell**
 
@@ -180,7 +182,7 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
    > 我想设计一个 ECE329 VR 实验，观察长螺线管中心的磁场如何随电流变化。请打开实时进度页，再问我第一个设计问题。
 
-2. 第一次启动时，客户端可能询问是否允许在本项目运行 Python、打开本地网页。核对项目后允许本次操作。你应当看到一个实验编号（`design_id`）、第一个设计问题和进度页。如果系统没自动弹出网页，点击 Agent 返回的本机链接。网页的四部分是当前流程、讲义依据、设计摘要和设计检查；右上角可从默认英文切换到中文。**回复问题的位置是 Agent 聊天框。**
+2. 第一次启动时，客户端可能询问是否允许在本项目运行 Python、打开本地网页。核对项目后允许本次操作。你应当看到设计编号（`design_id`）、第一个设计问题和进度页。如果系统没自动弹出网页，点击 Agent 返回的本机链接。网页的四部分是当前流程、讲义依据、设计摘要和设计检查；右上角可从默认英文切换到中文。**回复问题的位置是 Agent 聊天框。**
 3. 可以先说“给我看这个公式的讲义依据”，再说“把草稿改成只测线圈中心，固定匝数和长度”。可以在同一条回复里接受草稿并说明要改的细节，例如讨论电流滑块时说“上限用草稿中的 2 A，把步长改为 0.1 A”。Agent 会一起记录已决定的事项，再就剩余选择提问。准备定稿时按第 6 节确认整份方案。
 4. 记下实际的 `design_id`。下次打开同一项目、选中同一 Skill，说“继续设计，编号是［粘贴原编号］，从上次待确认的草稿开始”。核对 Agent 返回的**编号与阶段**。只有主题而有多个同名实验时，先从候选中选出原实验。
 
@@ -200,20 +202,22 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
 1. **沿用刚完成的设计**：在原聊天说“用刚确认并导出的这版方案开始搭建”。核对 Agent 报出的设计版本、Builder 工作区和当前 Gate（构建关卡）。
 2. **已经有自己的方案**：在已配置的项目聊天里，把目标文件附到聊天里，指明版本，说“只用附件这一版直接进入 Builder”。Agent 会从这份方案开始核对需求；有多个版本时先让它确认选中了哪一份。
-3. **继续已有构建**。告诉 Agent：“继续原工作区［路径］里的［lab_id］。” 核对工作区、当前 Gate 和待办事项。每一关的检查与批准顺序见[第 10 节的 Builder 流程](#builder-gates)。
+3. **继续已有构建**。在同一项目的聊天里告诉 Agent：“继续 Builder 工作区［路径］里的［lab_id］。” 这里填写 Agent 之前为该实验给出的构建工作区路径。核对当前 Gate 和待办事项。每一关的检查与批准顺序见[第 10 节的 Builder 流程](#builder-gates)。
+
+**首次进入 Builder 时，记下续接信息。** 从已确认的设计进入时，可以直接对 Agent 说：“请把设计编号 `design_id`、构建编号 `lab_id` 和本次 Builder 工作区的完整路径列给我，方便下次继续。” 如果直接从附件开始搭建，只需保存构建编号 `lab_id` 和 Builder 工作区的完整路径。
 
 ### 在 Gate 4 打开工程并检查编译
 
 1. **在 Gate 4 打开本次实验。** 等 Agent 告知脚手架已生成，在 Hub 选 **Projects（项目）→ Add → Add project from disk**，选择 Agent 给出的 `UnityProject` 文件夹。Windows 用户使用它给出的短路径，即下方命令输出的目录。选中项目并用第 4 节安装的版本打开。[Unity Hub 项目操作说明](https://docs.unity.com/en-us/hub/projects-window-reference)
 2. **核对编译结果。** 保持编辑模式，等待资源导入和 C# 自动编译结束，打开 **Window → General → Console**。如果红色错误数为 0，把结果告诉 Agent，继续 Gate 4 验收。如果有错误，把第一条红色错误的完整文字发给 Agent。此步无需点击 Play 或打包应用。
 
-**Windows 重启后继续打开同一个工程。** 第一次使用或从旧 Z 盘迁移时，保存并关闭旧工程。在仓库根目录的 PowerShell 执行下面的命令。从 Design 进入 Builder 时，将示例编号换成自己的实验编号。独立运行 Builder 时，把编号换成带引号的工作区完整路径（包含 `UnityProject` 的那一层）。
+**Windows 重启后继续打开同一个工程。** 第一次使用或从旧 Z 盘迁移时，保存并关闭旧工程。在仓库根目录的 PowerShell 执行下面的命令。从 Design 进入 Builder 时，填入上面记下的构建编号 `lab_id`，例如 `ece329_solenoid_current`。独立运行 Builder 时，把示例编号换成带引号的 Builder 工作区完整路径（包含 `UnityProject` 的那一层）。
 
 ```powershell
 .\.venv\Scripts\python.exe emvr-lab-workflow/scripts/builder.py ece329_solenoid_current unity-project
 ```
 
-复制输出的完整路径，在 Unity Hub 选 **Projects → Add → Add project from disk**，添加并打开一次。以后重启直接选这个 Hub 条目。这个入口是本机用户目录下的持久目录联接，指向原场景和 Gate 记录。若同一编号对应多次运行，用命令列出的目标工作区路径替换实验编号再执行。
+复制输出的完整路径，在 Unity Hub 选 **Projects → Add → Add project from disk**，添加并打开一次。以后重启直接选这个 Hub 条目。这个入口是本机用户目录下的持久目录联接，指向原场景和 Gate 记录。若同一编号对应多次运行，用命令列出的目标工作区完整路径替换构建编号 `lab_id` 再执行。
 
 ### 在网页中查看场景
 
@@ -223,11 +227,11 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
 ## 8. 手动操作与排错
 
-1. **Skill 名称没有出现**：确认客户端打开的是第 1 步的根目录。在第 3 步所选客户端的项目目录中检查 `emvr-lab-workflow/SKILL.md` 入口文件，确认名称和描述位于两行 `---` 之间。确认不是 `SKILL.md.txt`，保存后新开项目聊天，必要时重启客户端。临时续接也可在聊天里明确说“请读取仓库根目录下的 `emvr-lab-workflow/SKILL.md` 并从实验编号……继续”。
+1. **Skill 名称没有出现**：确认客户端打开的是第 1 步的根目录。在第 3 步所选客户端的项目目录中检查 `emvr-lab-workflow/SKILL.md` 入口文件，确认名称和描述位于两行 `---` 之间。确认不是 `SKILL.md.txt`，保存后新开项目聊天，必要时重启客户端。临时续接也可在聊天里明确说“请读取仓库根目录下的 `emvr-lab-workflow/SKILL.md` 并从设计编号 `design_id`［填入原编号］继续”。
 2. **提示缺模块或找不到知识库**：回到第 2 步重新执行知识库查询。如果能查到，请 Agent 使用同一个 `.venv` 解释器，并从第 1 步的根目录运行原操作。
 3. **已有实验的网页打不开**：让 Agent 重开同一编号。手动检查时，在包根执行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/viewer.py open DESIGN_ID`，把 `DESIGN_ID` 换成实际编号并打开返回的 `url`。用 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py show DESIGN_ID` 核对进度。macOS 将命令开头换为 `.venv/bin/python`。
-4. **换电脑后找不到旧实验**：会话、交接文件和 Builder 工作区默认保存在原项目的 `emvr-lab-workflow/state/`；旧项目也可能使用根目录的 `state/`。迁移原状态目录，在新机器重做第 2～3 步，再提供原编号。
-5. **Unity Hub 找不到原工程**。请 Agent 定位原工作区，再按[第 7 节](#start-builder)按运行类型用实验编号或工作区路径取回工程入口。
+4. **换电脑后找不到旧实验**：复制原状态目录（默认是 `emvr-lab-workflow/state/`，旧项目也可能使用根目录的 `state/`）。其中包含设计会话和从设计创建的 Builder 工作区。直接从附件搭建时，还要迁移实际使用的独立 Builder 工作区。按[第 9B 节](#update-zip)恢复已有源码和知识库归档，在新电脑上完成第 2～3 节的配置。继续设计时提供 `design_id`；继续独立构建时提供 `lab_id` 和迁移后工作区的完整路径。
+5. **Unity Hub 找不到原工程**。请 Agent 定位原工作区，再参照[第 7 节](#start-builder)，按运行类型用构建编号 `lab_id` 或 Builder 工作区完整路径取回工程入口。
 
 ### Unity 安装或打开工程时遇到问题
 
@@ -240,8 +244,9 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 以下命令在仓库根目录的 PowerShell 中逐条执行。macOS 将每条命令开头的解释器换为 `.venv/bin/python`。
 
 1. **新实验**先运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/viewer.py open --new`，打开返回的 URL 并复制 `viewer_session`。
-2. 运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py create "研究长螺线管中心的磁场如何随电流变化" --language zh --viewer-session TOKEN`，将 TOKEN 换成刚复制的令牌，记下返回的 `design_id`。已有实验直接按第 8 步重开原编号。
-3. 整份设计确认后，运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py export DESIGN_ID` 导出。要开始搭建，再运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py builder-init DESIGN_ID`。两处 DESIGN_ID 都换成实际编号，根据 `artifacts` 和 `builder_workspace` 找到文件及工作区。
+2. 运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py create "研究长螺线管中心的磁场如何随电流变化" --language zh --viewer-session TOKEN`，将 TOKEN 换成刚复制的令牌，记下返回的 `design_id`。已有设计可直接运行上方排错第 3 项的 `viewer.py open DESIGN_ID` 和 `workflow.py show DESIGN_ID`，两处都填原来的设计编号。
+3. 用这个 `design_id` 在 Agent 聊天中继续讨论并确认方案。手动提交一轮设计回复时，按[Agent 输入协议](emvr-lab-workflow/references/agent-turns.md)向 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py turn DESIGN_ID --stdin-json` 提供本轮 JSON。
+4. 整份设计确认后，运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py export DESIGN_ID` 导出。要开始搭建，再运行 `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py builder-init DESIGN_ID`。两处 DESIGN_ID 都换成实际设计编号，根据 `artifacts` 和 `builder_workspace` 找到文件及工作区。
 
 </details>
 
@@ -312,7 +317,7 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
    .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
    ```
 
-2. 查询返回 `course` 和 `formulas` 后，在更新后的项目里新开 Agent 聊天，选中 Skill，说“继续实验［原 design_id］，打开进度页，告诉我当前 Gate 和待处理事项”。独立 Builder 可说“继续原工作区［实际路径］里的［lab_id］”。核对编号、Gate 和上次待处理事项。Windows 上需要打开 Unity 时，使用 Agent 为原工作区返回的短路径。
+2. 在 `course` 的 `formulas` 列表中看到 `long_solenoid_field` 后，在更新后的项目里新开 Agent 聊天，选中 Skill，说“继续实验［原 design_id］，打开进度页，告诉我当前 Gate 和待处理事项”。独立 Builder 可说“继续原工作区［实际路径］里的［lab_id］”。核对编号、Gate 和上次待处理事项。Windows 上需要打开 Unity 时，使用 Agent 为原工作区返回的短路径。
 
 ## 10. Design 和 Builder 工作流
 
@@ -334,6 +339,8 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
 ### Builder 工作流的关卡顺序
 
+当前版本依次完成 Gate 0～6，然后直接进入 Gate 8，没有独立的 Gate 7。
+
 每次查看 Agent 报出的当前 Gate、验证结果和待办事项。一次批准只推进当前关卡。需要在 Unity 里操作时，使用 Agent 给出的工程入口。
 
 1. **Gate 0 · 边界核验**。核对输入方案和工作区，建立受保护文件的初始记录。
@@ -352,4 +359,4 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 1. 在 Gate 8 核对两部分手册后，告诉 Agent：“我批准本次 Gate 8，请给我归档路径。”
 2. Agent 在记录这次批准时同步写入复盘。一次 Gate 8 批准即可完成手册验收与知识库归档。Design 接 Builder 的实验总结两段流程；直接从 Builder 开始的实验总结本次搭建。复盘应写明遇到的问题、触发条件、处理办法、验证结果和遗留限制。若没有已知问题，如实记录即可。
 3. 打开 Agent 返回的 `knowledge_update` 所指向的 Markdown 文件，核对归档内容。路径以仓库根目录为准：关联设计的实验保存在 `knowledge/newknowledge/<design_id>/<设计指纹>.md`，独立 Builder 保存在 `knowledge/newknowledge/builder/<lab_id>/<验收版本指纹>.md`。如果页面显示“验收通过，待归档复盘”，请 Agent 恢复原工作区，用已有批准重试归档，直到返回可打开的文件。
-4. **上传 Agent 整理好的两个文件夹。** 审阅 Gate 8 手册时，可在批准消息里加一句“提交名用张三”。Agent 会在同一次验收中整理 `张三_newcode`（本次构建源码）和 `张三_newknowledge`（本次知识库更新），给出两个本地路径。未指定名字时默认用实验编号。按路径打开，直接上传或分别压缩后发送给维护者。如果页面显示“上传副本待整理”，让 Agent 在原实验中重试。它会沿用提交名和补充文件清单，两个副本都就绪后页面显示完成。
+4. **上传 Agent 整理好的两个文件夹。** 审阅 Gate 8 手册时，可在批准消息里加一句“提交名用张三”。Agent 会在同一次验收中整理 `张三_newcode`（本次构建源码）和 `张三_newknowledge`（本次知识库更新），给出两个本地路径。未指定名字时默认用构建编号 `lab_id`。按路径打开，直接上传或分别压缩后发送给维护者。如果页面显示“上传副本待整理”，让 Agent 在原实验中重试。它会沿用提交名和补充文件清单，两个副本都就绪后页面显示完成。

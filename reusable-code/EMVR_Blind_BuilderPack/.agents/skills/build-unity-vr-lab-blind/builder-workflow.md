@@ -590,10 +590,11 @@ the delivery root. All selected source paths are relative to
 | --- | --- | --- |
 | Gate 5A foundation checks have passed, before the first Gate 5B edit | `python emvr-lab-workflow/scripts/code_archive.py begin --workspace "PACK" --lab-id LAB_ID` | Confirm `baseline_recorded` for this run. |
 | Gate 5B implementation and tests are ready, before Gate 5 approval | `python emvr-lab-workflow/scripts/code_archive.py capture --workspace "PACK" --lab-id LAB_ID --file "Scripts/Example.cs"` | Replace the example and repeat `--file` for each new or modified domain source, shader, assembly definition or test. Review `selected` and `unselected_changes` against the types the selected scripts use. If a changed dependency belongs to the slice, repeat capture with the full file list. Record any dependencies supplied by the existing project in the developer handbook. |
-| User accepts the Gate 6 scene | `python emvr-lab-workflow/scripts/code_archive.py publish --workspace "PACK" --lab-id LAB_ID --approval-note "USER_FEEDBACK" --turn-id TURN_ID` | Substitute the user's actual acceptance. If native approval is already recorded, omit `--approval-note`. Verify the returned archive under `reusable-code/newcode/<lab_id>/<accepted-digest>/` and the selected files, including available Unity metadata. |
+| User accepts the Gate 6 scene | `python emvr-lab-workflow/scripts/builder.py "PACK" approve-gate --lab-id LAB_ID --gate 6 --note "USER_FEEDBACK" --turn-id TURN_ID` | Use the user's actual acceptance message. Read `archive`, `files`, and `status_line` from the returned JSON. Verify the selected files and their available Unity metadata under `reusable-code/newcode/<lab_id>/<accepted-digest>/`. |
 
-If publication fails, inspect the current native acceptance and the selection.
-Retry publication for that workspace after resolving the reported issue. A
+If publication fails after Gate 6 approval was recorded, inspect the selection.
+For a file conflict, compare the archived file with the accepted source before retrying.
+Once resolved, run `python emvr-lab-workflow/scripts/code_archive.py publish --workspace "PACK" --lab-id LAB_ID` using the existing approval. A
 revalidated revision can be published again. The existing reuse policy applies
 when selecting archived code for another lab.
 

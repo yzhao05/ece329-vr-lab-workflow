@@ -89,8 +89,13 @@ def archive(pack, lab, action, files=(), destination=ROOT / "reusable-code/newco
             for source in inputs:
                 relative = source.relative_to(assets)
                 existing = target / relative
-                if existing.is_file() and filecmp.cmp(source, existing, shallow=False):
-                    continue
+                if existing.exists():
+                    if existing.is_file() and filecmp.cmp(source, existing, shallow=False):
+                        continue
+                    raise ValueError(
+                        f"Archive conflict for accepted revision {fingerprint}. "
+                        f"Compare these files before retrying: {source} and {existing}"
+                    )
                 output = bundle / relative
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, output)

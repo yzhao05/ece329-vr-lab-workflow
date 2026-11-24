@@ -97,12 +97,15 @@ if __name__ == "__main__":
                     approval.error("Retrospective and upload options apply to Gate 8 only.")
                 if choice.gate == 6:
                     from code_archive import archive
-                    print(dump(archive(pack, choice.lab_id, "publish", approval_note=choice.note, turn_id=choice.turn_id)))
+                    published = archive(pack, choice.lab_id, "publish", approval_note=choice.note, turn_id=choice.turn_id)
+                    published["status_line"] = read_builder_status(pack, choice.lab_id)["status_line"]
+                    print(dump(published))
                 else:
                     message = approve_user_gate(pack, choice.lab_id, choice.gate, choice.note, choice.turn_id,
                                                 choice.notes, upload_request if choice.gate == 8 else None)
                     if choice.gate != 8:
                         print(message)
+                        print(read_builder_status(pack, choice.lab_id)["status_line"])
             if args.action == "prepare-upload" or choice.gate == 8:
                 try:
                     uploads = prepare_upload(pack, choice.lab_id, args.state_dir or DEFAULT_STATE, upload_request)
@@ -110,8 +113,6 @@ if __name__ == "__main__":
                     raise ValueError(f"Gate 8 upload copies not ready: {error}. Retry prepare-upload for this run.") from error
                 uploads["status_line"] = read_builder_status(pack, choice.lab_id)["status_line"]
                 print(dump(uploads))
-            else:
-                print(read_builder_status(pack, choice.lab_id)["status_line"])
         elif args.action == "status" and not any(a in {"-h", "--help"} for a in args.arguments):
             status = json.loads(labflow(pack, "status", *args.arguments))
             status = unified_builder_status(pack, status)

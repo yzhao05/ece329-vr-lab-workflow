@@ -139,6 +139,8 @@ def handoff(engine, design, state, start_builder, language=None, translations=No
     result["builder_inputs_match_export"] = all(
         (inputs / name).read_bytes() == (folder / name).read_bytes() for name in (*pdfs, contract_name))
     write_json(state / "runs" / key / "active.json", {"fingerprint": stamp["fingerprint"], "lab_id": lab["lab_id"]})
+    result["design_id"] = key
+    result["lab_id"] = lab["lab_id"]
     result["builder_workspace"] = str(pack)
     result["builder_inputs"] = str(inputs)
     return result

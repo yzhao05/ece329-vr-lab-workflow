@@ -4,13 +4,15 @@
 
 This tutorial follows a long-solenoid experiment. On first use, complete sections 1–3. For design and PDF export, go straight to [section 5](#start-design). To build the scene in Unity, first complete [Unity setup in section 4](#install-unity). If you already have a plan or want to resume a build, go to [section 7](#start-builder).
 
-Already installed? Go to [update a Git clone](#update-git) or [update a ZIP download](#update-zip).
+**Already set up?** Open a new agent chat in the same project to [start or resume a design](#start-design) or [build from an existing plan](#start-builder). When you want to upgrade, follow the [update steps in section 9](#update).
 
 ## 1. Download the project and open its folder
 
 1. Choose one download method. For Git, open a terminal in the parent folder and run `git clone https://github.com/yzhao05/ece329-vr-lab-workflow.git`. For ZIP, open the [project repository](https://github.com/yzhao05/ece329-vr-lab-workflow) and choose **Code → Download ZIP**. On Windows, right-click the ZIP and select **Extract All**. On macOS, double-click it. If your instructor provided an extracted folder, open that folder.
 2. Find the folder where you can see `README.md`, `emvr-lab-workflow`, `knowledge`, `web`, `unity-package`, and `reusable-code` together. This is the **repository root**. Keep those directories together.
 3. **Windows:** in File Explorer, open that folder, type `powershell` in the address bar, and press Enter. **macOS:** open Terminal, type `cd ` with a trailing space, drag the folder into Terminal, and press Return. Use this window for the setup commands below.
+
+**The first time you use the project, select this repository root as your agent’s workspace.** Section 3 shows where to select it in your desktop app. You can then open a new chat in the same project to start another experiment or resume an earlier one. To resume a design, give the agent its original `design_id`. When you hand a confirmed design to Builder, the agent creates or restores a dedicated build workspace for that experiment. At Gate 4, open the `UnityProject` path the agent gives you in Unity Hub.
 
 ## 2. Install Python and the design engine
 
@@ -33,7 +35,7 @@ Already installed? Go to [update a Git clone](#update-git) or [update a ZIP down
    .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
    ```
 
-3. Look for output containing `course` and `formulas`. You're ready to connect the desktop agent. The default engine uses your host agent without a separate model API key.
+3. Under `course`, look for the `formulas` list and the entry `long_solenoid_field`. You're ready to connect the desktop agent. The default engine uses your host agent without a separate model API key.
 
 ## 3. Load the skill in your desktop agent (choose one)
 
@@ -56,8 +58,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3A. Codex
 
-1. Sign in to the Codex desktop app. In the projects sidebar, create or open a local project and select the repository folder from step 1. If you already have a project, open its menu, choose **Edit project → Add folder**, and make that folder the current working directory. Use the local checkout.
-2. This client's project entry is `.agents/skills/emvr-lab-workflow/SKILL.md`. In the terminal from step 1, run the two lines for your operating system to open the entry file.
+1. Sign in to the Codex desktop app. In the projects sidebar, create or open a local project and select the repository root you found in section 1. **This selects your Codex workspace.** If you already have a project, open its menu, choose **Edit project → Add folder**, and make that same folder the current working directory.
+2. This client's project entry is `.agents/skills/emvr-lab-workflow/SKILL.md`. In the terminal you opened at the repository root in section 1, run the two lines for your operating system to open the entry file.
 
    **Windows · PowerShell**
 
@@ -77,8 +79,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3B. Claude Desktop
 
-1. Sign in to Claude Desktop and switch to **Code**. Start a session, choose your computer under **Local** in the environment selector, then choose **Open folder…** in the adjacent folder picker. Select the repository root. If offered worktree isolation, use the original folder so later sessions see the same experiment records.
-2. This client's project entry is `.claude/skills/emvr-lab-workflow/SKILL.md`. In the terminal from step 1, run the two lines for your operating system to open the entry file.
+1. **Select the workspace for your Claude Code session.** Sign in to Claude Desktop, switch to **Code**, and start a session. Choose your computer under **Local** in the environment selector. In the adjacent folder picker, choose **Open folder…** and select the repository root you found in section 1. This folder is the session’s workspace. If offered worktree isolation, use the original folder so later sessions see the same experiment records.
+2. This client's project entry is `.claude/skills/emvr-lab-workflow/SKILL.md`. In the terminal you opened at the repository root in section 1, run the two lines for your operating system to open the entry file.
 
    **Windows · PowerShell**
 
@@ -98,8 +100,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3C. Cursor
 
-1. Open Cursor, choose **Open Folder**, and select the repository root. Sign in and open local Agent chat for that folder.
-2. This client's project entry is `.cursor/skills/emvr-lab-workflow/SKILL.md`. In the terminal from step 1, run the two lines for your operating system to open the entry file.
+1. **Select the workspace for Cursor Agent.** Open Cursor, choose **Open Folder**, and select the repository root you found in section 1. Sign in and start a local Agent chat in the window where you opened that folder.
+2. This client's project entry is `.cursor/skills/emvr-lab-workflow/SKILL.md`. In the terminal you opened at the repository root in section 1, run the two lines for your operating system to open the entry file.
 
    **Windows · PowerShell**
 
@@ -119,8 +121,8 @@ Resolve the procedures, scripts, and knowledge paths against the original reposi
 
 ### 3D. VS Code + GitHub Copilot
 
-1. In VS Code, choose **File → Open Folder…** and select the repository root. Open Chat from the Copilot icon, sign in to GitHub when prompted, and choose a Copilot agent session with local file and terminal tools.
-2. This client's project entry is `.github/skills/emvr-lab-workflow/SKILL.md`. In the terminal from step 1, run the two lines for your operating system to open the entry file.
+1. **Select the workspace GitHub Copilot will use.** In VS Code, choose **File → Open Folder…** and select the repository root you found in section 1. Copilot uses the workspace open in that window. In the same window, open Chat from the Copilot icon, sign in to GitHub when prompted, and choose an agent session with local file and terminal tools.
+2. This client's project entry is `.github/skills/emvr-lab-workflow/SKILL.md`. In the terminal you opened at the repository root in section 1, run the two lines for your operating system to open the entry file.
 
    **Windows · PowerShell**
 
@@ -198,14 +200,16 @@ See the [Design stages in section 10](#design-stages) for what to review at each
 
 1. **For the design you just finished**, say “Start building from the version I just confirmed and exported.” Check the design version, Builder workspace, and current gate reported by the agent.
 2. **If you already have a plan**, attach your chosen plan to the project chat, identify the version, and say “Go directly to Builder using this attachment.” The agent reviews the requirements in that plan. If there are several versions, confirm which one to use.
-3. **Resume a build.** Tell the agent, “Resume [lab_id] in the original workspace at [path].” Check the workspace, current gate, and pending task. See the [Builder gates in section 10](#builder-gates) for the checks and approvals.
+3. **Resume a build.** In a chat in the same project, tell the agent, “Resume [lab_id] in the Builder workspace at [path].” Use the build workspace path the agent previously gave you for that experiment. Check the current gate and pending task. See the [Builder gates in section 10](#builder-gates) for the checks and approvals.
+
+**Save the details you’ll need to resume the build.** When you first enter Builder from a confirmed design, ask the agent, “Please list my design ID (`design_id`), build ID (`lab_id`), and the full path to this Builder workspace so I can resume next time.” If you start directly from an attachment, you only need to save the build ID and the full Builder workspace path.
 
 ### Open the project and check compilation at Gate 4
 
 1. **Open your experiment at Gate 4.** Once the agent reports that the scaffold is ready, choose **Projects → Add → Add project from disk** in the Hub. Select the `UnityProject` folder the agent gave you for this run. On Windows, use the short path it provides, as printed by the command below. Open the project with the Editor version installed in section 4. [Unity Hub project instructions](https://docs.unity.com/en-us/hub/projects-window-reference)
 2. **Check compilation.** Stay in Edit mode and wait for asset import and automatic C# compilation to finish. Open **Window → General → Console**. If the red error count is zero, report that result to the agent to continue Gate 4 acceptance. If there are errors, send the agent the full text of the first red error. You can leave Play and Build unused for this check.
 
-**Reopen the same project after restarting Windows.** When first setting up the project or migrating from the old Z: drive, save and close the old project. Run this command in PowerShell at the repository root. For a build created from Design, substitute your lab ID. For a standalone Builder run, replace the ID with the quoted full path of the workspace containing `UnityProject`.
+**Reopen the same project after restarting Windows.** When first setting up the project or migrating from the old Z: drive, save and close the old project. Run this command in PowerShell at the repository root. For a build created from Design, enter the build ID (`lab_id`) you saved above, for example `ece329_solenoid_current`. For a standalone Builder run, replace the example ID with the quoted full path of the Builder workspace containing `UnityProject`.
 
 ```powershell
 .\.venv\Scripts\python.exe emvr-lab-workflow/scripts/builder.py ece329_solenoid_current unity-project
@@ -224,7 +228,7 @@ The preview updates while the editor is open and shows the last saved version af
 1. **Skill missing from the picker?** Check that your app opened the root from step 1. In the project skills directory for your app, check the `emvr-lab-workflow/SKILL.md` entry, including both `---` delimiters around the name and description. Check for an accidental `.txt` extension, save, and start a fresh project chat. Restart the client if needed. To resume while checking discovery, you can explicitly ask it to “Read `emvr-lab-workflow/SKILL.md` from the repository root and continue design [my ID].”
 2. **Missing module or knowledge files?** Rerun the knowledge query in step 2. If it succeeds, have the agent retry using the same `.venv` interpreter and the repository root as its working directory.
 3. **Existing progress page won't open?** Ask the agent to reopen the same ID. To check manually from the root on Windows, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/viewer.py open DESIGN_ID`, substitute your actual ID, and open the returned `url`. Run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py show DESIGN_ID` to see the saved progress. On macOS use `.venv/bin/python` at the start of each command.
-4. **Moved computers?** Sessions, handoff files, and Builder workspaces are normally in `emvr-lab-workflow/state/`. Older checkouts may use `state/` at the repository root. Transfer the original state directory, repeat steps 2–3 on the new machine, and resume using your original ID.
+4. **Moved computers?** Copy the original state directory, normally `emvr-lab-workflow/state/` or, in older checkouts, `state/` at the repository root. It contains your design sessions and the Builder workspaces created from them. If you built directly from an attachment, also transfer that standalone Builder workspace. Restore any source and knowledge archives as described in [section 9B](#update-zip) and complete sections 2–3 on the new computer. To resume a design, provide its `design_id`. To resume a standalone build, provide its `lab_id` and the full path to the transferred workspace.
 5. **Unity Hub no longer lists the project?** Ask the agent to locate the original workspace, then use the lab ID or workspace path for your type of run as described in [section 7](#start-builder).
 
 ### Troubleshoot Unity installation and project import
@@ -238,8 +242,9 @@ The preview updates while the editor is open and shows the last saved version af
 From the repository root on Windows, use the commands below one at a time. On macOS replace the interpreter at the start of each line with `.venv/bin/python`.
 
 1. For a **new** experiment, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/viewer.py open --new`. Open the returned URL and copy its `viewer_session`.
-2. Run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py create "Compare solenoid fields as current changes" --language en --viewer-session TOKEN` with that token. Save the returned `design_id`. For an existing experiment, use step 8 to reopen its ID.
-3. After the design is confirmed, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py export DESIGN_ID`. To build it, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py builder-init DESIGN_ID`. Substitute the actual ID in both commands. Use the returned `artifacts` and `builder_workspace` locations.
+2. Run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py create "Compare solenoid fields as current changes" --language en --viewer-session TOKEN` with that token. Save the returned `design_id`. For an existing design, run the `viewer.py open DESIGN_ID` and `workflow.py show DESIGN_ID` commands in troubleshooting item 3 above, using the original design ID in both.
+3. Use that `design_id` in the agent chat to discuss and confirm the design. To submit a design turn manually, send the JSON for that turn to `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py turn DESIGN_ID --stdin-json` as described in the [agent input protocol](emvr-lab-workflow/references/agent-turns.md).
+4. After the design is confirmed, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py export DESIGN_ID`. To build it, run `.\.venv\Scripts\python.exe emvr-lab-workflow/scripts/workflow.py builder-init DESIGN_ID`. Substitute the actual design ID in both commands. Use the returned `artifacts` and `builder_workspace` locations.
 
 </details>
 
@@ -310,7 +315,7 @@ If your custom state directory, viewer data directory, or standalone Builder wor
    .venv/bin/python emvr-lab-workflow/scripts/workflow.py knowledge "solenoid" --scope design
    ```
 
-2. Once the query returns `course` and `formulas`, open a fresh agent chat in the updated project, select the skill, and say “Resume experiment [original design_id], open its progress page, and tell me the current gate and pending task.” For standalone Builder, say “Resume [lab_id] in the original workspace at [full path].” Check that the ID, gate, and pending task match your previous session. On Windows, use the short path returned by the agent when you next open that workspace in Unity.
+2. Once you see `long_solenoid_field` in the `formulas` list under `course`, open a fresh agent chat in the updated project, select the skill, and say “Resume experiment [original design_id], open its progress page, and tell me the current gate and pending task.” For standalone Builder, say “Resume [lab_id] in the original workspace at [full path].” Check that the ID, gate, and pending task match your previous session. On Windows, use the short path returned by the agent when you next open that workspace in Unity.
 
 ## 10. Design and Builder workflows
 
@@ -332,6 +337,8 @@ Discuss the draft in the agent chat and follow the current stage on the progress
 
 ### The Builder gates in order
 
+In this version, Builder runs Gates 0 through 6 and then goes directly to Gate 8. There is no separate Gate 7.
+
 At each gate, check the current gate, verification results, and outstanding items reported by the agent. Each approval advances one gate. When a check requires Unity, use the project path supplied by the agent.
 
 1. **Gate 0 · Verify the workspace.** Check the input plan and workspace and establish the baseline for protected files.
@@ -350,4 +357,4 @@ At each gate, check the current gate, verification results, and outstanding item
 1. After reviewing both parts of Gate 8, tell the agent, “I approve Gate 8 for this run. Please give me the archive path.”
 2. The agent writes the retrospective when it records that approval. One Gate 8 approval covers both handbook acceptance and archiving. A linked run covers both Design and Builder. A standalone Builder run covers the build. The record should describe actual issues, what triggered them, how they were handled, what was verified, and any remaining limitations. If there were no known issues, the record should say so.
 3. Open the Markdown file identified by `knowledge_update` and check the archived notes. Paths are relative to the repository root. Linked runs use `knowledge/newknowledge/<design_id>/<design-fingerprint>.md`. Standalone Builder runs use `knowledge/newknowledge/builder/<lab_id>/<acceptance-fingerprint>.md`. If the page shows “Accepted, retrospective pending”, ask the agent to resume the same workspace and retry archiving with the existing approval until it returns a file you can open.
-4. **Upload the two folders prepared by the agent.** When approving the Gate 8 handbooks, you can add “Use Alex as my submission name.” The agent prepares `Alex_newcode` (source for this build) and `Alex_newknowledge` (this run’s knowledge updates) and returns both local paths. The lab ID is the default name. Open the folders and send them to the maintainer directly or as two ZIP files. If the page shows “Accepted, upload folders pending”, ask the agent to retry the same handoff. It reuses your submission name and list of additional files. The page shows completion once both folders are ready.
+4. **Upload the two folders prepared by the agent.** When approving the Gate 8 handbooks, you can add “Use Alex as my submission name.” The agent prepares `Alex_newcode` (source for this build) and `Alex_newknowledge` (this run’s knowledge updates) and returns both local paths. The build ID (`lab_id`) is the default name. Open the folders and send them to the maintainer directly or as two ZIP files. If the page shows “Accepted, upload folders pending”, ask the agent to retry the same handoff. It reuses your submission name and list of additional files. The page shows completion once both folders are ready.

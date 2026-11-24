@@ -189,6 +189,7 @@ def test_finished_handoff(tmp_path):
     result = cli(tmp_path, "builder-init", key)
     pack = Path(result["builder_workspace"])
     lab_id = "ece329_solenoid_regression"
+    assert (result["design_id"], result["lab_id"]) == (key, lab_id)
     assert cli(tmp_path, "show", key)["status_line"] == result["status_line"]
     premature = subprocess.run(
         [sys.executable, str(SKILL / "scripts/builder.py"), str(pack), "approve-gate",
@@ -214,6 +215,7 @@ def test_finished_handoff(tmp_path):
     frozen = inputs / machine_copy.name
     frozen.write_bytes(machine_copy.read_bytes())
     resumed = cli(tmp_path, "builder-init", key)
+    assert (resumed["design_id"], resumed["lab_id"]) == (key, lab_id)
     assert resumed["builder_workspace"] == str(pack)
     assert resumed["builder_inputs_match_export"] is False
     assert frozen.read_bytes() == machine_copy.read_bytes()
@@ -530,6 +532,10 @@ def test_gate5b_archive_bound_to_acceptance(tmp_path, monkeypatch):
     copy.unlink()
     assert run("publish") == result
     assert copy.read_bytes() == owned.read_bytes()
+    copy.write_text("Archive with a different recorded source")
+    with pytest.raises(ValueError, match="Archive conflict"):
+        run("publish")
+    assert copy.read_text() == "Archive with a different recorded source"
     status.clear()
     status.update(migration_required=True, current_gate=None)
     with pytest.raises(ValueError, match="legacy"):
