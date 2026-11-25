@@ -12,7 +12,7 @@
 2. 进入能同时看到 `README.md`、`emvr-lab-workflow`、`knowledge`、`web`、`unity-package` 和 `reusable-code` 的那一层。这就是下面说的**仓库根目录**。请保留这些文件夹的相对位置。
 3. **Windows**：在这个文件夹的资源管理器地址栏输入 `powershell` 并按回车。**macOS**：打开“终端”，输入 `cd `（末尾留一个空格），把这个文件夹拖入终端，再按回车。后面的安装命令都在这个窗口运行。
 
-**第一次使用时，在 Agent 中把这个项目根目录选为工作区。** 第 3 节会带你在所用的桌面端选中它。以后开始新实验或继续旧实验，都可以在同一项目下新开聊天。要接着做上次的设计，告诉 Agent 原来的 `design_id`。把已确认的设计交给 Builder 时，Agent 会为这次实验创建或恢复专属的构建工作区。到 Gate 4，再在 Unity Hub 中打开 Agent 给出的 `UnityProject` 路径。
+**第一次使用时，在 Agent 中把这个项目根目录选为工作区。** 第 3 节会带你在所用的桌面端选中它。以后开始新实验或继续旧实验，都可以在同一项目下新开聊天。要接着做上次的设计，告诉 Agent 原来的 `design_id`。把已确认的设计交给 Builder 时，Agent 会为这次实验创建或恢复专属的构建工作区。到 Gate 4，在 Unity Hub 中选择 Agent 验证过的工程入口（`unity_editor_project`）。
 
 ## 2. 安装 Python 和设计引擎
 
@@ -204,11 +204,13 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 2. **已经有自己的方案**：在已配置的项目聊天里，把目标文件附到聊天里，指明版本，说“只用附件这一版直接进入 Builder”。Agent 会从这份方案开始核对需求；有多个版本时先让它确认选中了哪一份。
 3. **继续已有构建**。在同一项目的聊天里告诉 Agent：“继续 Builder 工作区［路径］里的［lab_id］。” 这里填写 Agent 之前为该实验给出的构建工作区路径。核对当前 Gate 和待办事项。每一关的检查与批准顺序见[第 10 节的 Builder 流程](#builder-gates)。
 
+**附件下载遇到 DNS 错误时**，如果用的是本项目导出的方案，可以告诉 Agent：“请用设计编号和版本查找本地交接文件。” 提供已知的 `design_id`、修订号和语言，或直接给出自己保存的交接目录。导出文件在状态目录的 `handoffs/` 下，构建进度在对应的 Builder 工作区中。删除本次构建目录后，要继续原 Gate 需恢复该目录的备份；如果希望从 Gate 0 重新开始，请明确告诉 Agent 用保留的方案重新搭建。
+
 **首次进入 Builder 时，记下续接信息。** 从已确认的设计进入时，可以直接对 Agent 说：“请把设计编号 `design_id`、构建编号 `lab_id` 和本次 Builder 工作区的完整路径列给我，方便下次继续。” 如果直接从附件开始搭建，只需保存构建编号 `lab_id` 和 Builder 工作区的完整路径。
 
 ### 在 Gate 4 打开工程并检查编译
 
-1. **在 Gate 4 打开本次实验。** 等 Agent 告知脚手架已生成，在 Hub 选 **Projects（项目）→ Add → Add project from disk**，选择 Agent 给出的 `UnityProject` 文件夹。Windows 用户使用它给出的短路径，即下方命令输出的目录。选中项目并用第 4 节安装的版本打开。[Unity Hub 项目操作说明](https://docs.unity.com/en-us/hub/projects-window-reference)
+1. **在 Gate 4 打开本次实验。** 等 Agent 告知脚手架已生成，在 Hub 选 **Projects（项目）→ Add → Add project from disk**，选择 Agent 给出的 `unity_editor_project`。Windows 上直接选择这个短入口目录，即使它的名称是一串字符。选中项目并用第 4 节安装的版本打开。[Unity Hub 项目操作说明](https://docs.unity.com/en-us/hub/projects-window-reference)
 2. **核对编译结果。** 保持编辑模式，等待资源导入和 C# 自动编译结束，打开 **Window → General → Console**。如果红色错误数为 0，把结果告诉 Agent，继续 Gate 4 验收。如果有错误，把第一条红色错误的完整文字发给 Agent。此步无需点击 Play 或打包应用。
 
 **Windows 重启后继续打开同一个工程。** 第一次使用或从旧 Z 盘迁移时，保存并关闭旧工程。在仓库根目录的 PowerShell 执行下面的命令。从 Design 进入 Builder 时，填入上面记下的构建编号 `lab_id`，例如 `ece329_solenoid_current`。独立运行 Builder 时，把示例编号换成带引号的 Builder 工作区完整路径（包含 `UnityProject` 的那一层）。
@@ -217,13 +219,15 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 .\.venv\Scripts\python.exe emvr-lab-workflow/scripts/builder.py ece329_solenoid_current unity-project
 ```
 
-复制输出的完整路径，在 Unity Hub 选 **Projects → Add → Add project from disk**，添加并打开一次。以后重启直接选这个 Hub 条目。这个入口是本机用户目录下的持久目录联接，指向原场景和 Gate 记录。若同一编号对应多次运行，用命令列出的目标工作区完整路径替换构建编号 `lab_id` 再执行。
+复制输出的完整路径，在 Unity Hub 选 **Projects → Add → Add project from disk**，添加并打开一次。以后重启直接选这个 Hub 条目。这个入口是持久目录联接，默认保存在本机用户目录下，指向原场景和 Gate 记录。若同一编号对应多次运行，用命令列出的目标工作区完整路径替换构建编号 `lab_id` 再执行。
+
+如果短入口创建失败，请留在当前 Gate。可在仓库根目录用自己的 PowerShell 运行上面的命令。如果默认目录不可写，在构建编号或工作区路径前加 `--entry-dir "本机可写短目录"`，以后继续使用同一目录。保存并关闭已从长路径打开的工程，再从成功输出的入口重新打开。
 
 ### 在网页中查看场景
 
 在 Unity 中保存含可见模型的实验场景后，关闭编辑器也可以点击进度页右上角的 **Unity 3D**。浏览器会在本机加载已导出的模型。按住鼠标左键拖动可旋转，滚轮可缩放，按住右键拖动可平移。点选模型或从列表选择物体后，点击 **聚焦物体** 可近看，点击 **查看全景** 可恢复整体视角。点击 **工作流详情** 返回进度页。
 
-编辑器打开时预览会更新，关闭后显示最近保存的版本。预览使用网格形状、基本材质颜色和世界变换；贴图、Unity 专用着色器和 VR 交互需要在 Unity 中查看。旧工作区首次升级时，让 Agent 对原工作区运行上面的 `unity-project` 命令，在 Unity 中打开并保存目标场景一次。尚无可预览模型时按钮为灰色。
+编辑器打开时预览会更新，关闭后显示最近保存的版本。预览使用网格形状、基本材质颜色和世界变换；贴图、Unity 专用着色器和 VR 交互需要在 Unity 中查看。新工作区在 Gate 4 安装预览工具。旧工作区缺少预览工具时，可在 Gate 4 或 Gate 5A 验证通过前让 Agent 补装，再打开并保存目标场景。已通过 5A 的工作区沿用验收时的编辑器工具。尚无可预览模型时按钮为灰色。
 
 ## 8. 手动操作与排错
 
@@ -237,6 +241,7 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
 - **Hub 一直排队或提示下载校验失败**。先在 Hub 的下载列表查看失败项。若只有语言包失败，可先完成编辑器安装，再补装语言包。若编辑器本身反复失败，Windows 用户可以使用[第 4 节](#install-unity)的独立安装程序，再用 **Installs → Locate** 登记。
 - **打开工程时提示 `contains a locked Library`**。先关闭已打开该工作区的 Unity 编辑器，确认相关进程已退出，再从 Hub 重试。如果是解压得到的工程且仍提示锁定，关闭编辑器，把该工程里的 `Library` 改名为 `Library.backup`，重新打开并等待 Unity 重建导入缓存。保留 `Assets`、`Packages` 和 `ProjectSettings`。
+- **Gate 5A 保存后提示 `XR Interaction Setup.prefab` 导入副本哈希不同。** 保存场景并关闭该 Unity 工程。按[第 9 节](#update)更新后，在同一项目的聊天中提供原 Builder 工作区路径和 `lab_id`，请 Agent “恢复 XR 导入副本，在 Gate 5A 复测”。Agent 会核对导入记录、备份可识别的改写并恢复批准版本。用 Agent 给出的入口重开工程，复测鼠标和 XR 射线交互。其他差异交给维护者检查。
 
 <details>
 <summary>可选：手动运行同一流程</summary>
@@ -341,7 +346,7 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
 当前版本依次完成 Gate 0～6，然后直接进入 Gate 8，没有独立的 Gate 7。
 
-每次查看 Agent 报出的当前 Gate、验证结果和待办事项。一次批准只推进当前关卡。需要在 Unity 里操作时，使用 Agent 给出的工程入口。
+每次查看 Agent 报出的当前 Gate、验证结果和待办事项。批准后，Agent 记录本关结果并告诉你下一关。下一条消息可以直接提供下一关的材料或问题。需要在 Unity 里操作时，使用 Agent 给出的工程入口。
 
 1. **Gate 0 · 边界核验**。核对输入方案和工作区，建立受保护文件的初始记录。
 2. **Gate 1 · 确认实验需求**。核对构建简报，一次补齐缺少的课程、手册或评分信息。

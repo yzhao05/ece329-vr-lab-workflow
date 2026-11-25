@@ -27,12 +27,16 @@ def write_json(path, data):
 
 
 def write_text(path, content):
+    write_bytes(path, content.encode("utf-8"))
+
+
+def write_bytes(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
             tmp = Path(stream.name)
-            stream.write(content.encode("utf-8"))
+            stream.write(content)
         os.replace(tmp, path)
     finally:
         if tmp is not None:
@@ -280,6 +284,11 @@ def read_builder_status(pack, lab_id, fingerprint=None):
     return summary
 
 
+def missing_workspace_status(lab_id):
+    return {"stage": "workspace_missing", "lab_id": lab_id, "current_gate": None,
+            "workflow_complete": False, "approved_gates": [], "status_line": "Builder · 原工作区缺失，待恢复"}
+
+
 def active_builder(state, key, fingerprint):
     if not fingerprint:
         return None
@@ -289,4 +298,7 @@ def active_builder(state, key, fingerprint):
         return None
     if marker["fingerprint"] != fingerprint:
         return None
-    return read_builder_status(run_directory(state, key, fingerprint), marker["lab_id"], fingerprint)
+    pack = run_directory(state, key, fingerprint)
+    if not (native_path(pack) / "LabSpecs" / valid_id(marker["lab_id"]) / "workflow_state.json").is_file():
+        return {**missing_workspace_status(marker["lab_id"]), "source_fingerprint": fingerprint}
+    return read_builder_status(pack, marker["lab_id"], fingerprint)

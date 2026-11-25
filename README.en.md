@@ -12,7 +12,7 @@ This tutorial follows a long-solenoid experiment. On first use, complete section
 2. Find the folder where you can see `README.md`, `emvr-lab-workflow`, `knowledge`, `web`, `unity-package`, and `reusable-code` together. This is the **repository root**. Keep those directories together.
 3. **Windows:** in File Explorer, open that folder, type `powershell` in the address bar, and press Enter. **macOS:** open Terminal, type `cd ` with a trailing space, drag the folder into Terminal, and press Return. Use this window for the setup commands below.
 
-**The first time you use the project, select this repository root as your agent’s workspace.** Section 3 shows where to select it in your desktop app. You can then open a new chat in the same project to start another experiment or resume an earlier one. To resume a design, give the agent its original `design_id`. When you hand a confirmed design to Builder, the agent creates or restores a dedicated build workspace for that experiment. At Gate 4, open the `UnityProject` path the agent gives you in Unity Hub.
+**The first time you use the project, select this repository root as your agent’s workspace.** Section 3 shows where to select it in your desktop app. You can then open a new chat in the same project to start another experiment or resume an earlier one. To resume a design, give the agent its original `design_id`. When you hand a confirmed design to Builder, the agent creates or restores a dedicated build workspace for that experiment. At Gate 4, select the verified project entry (`unity_editor_project`) in Unity Hub.
 
 ## 2. Install Python and the design engine
 
@@ -202,11 +202,13 @@ See the [Design stages in section 10](#design-stages) for what to review at each
 2. **If you already have a plan**, attach your chosen plan to the project chat, identify the version, and say “Go directly to Builder using this attachment.” The agent reviews the requirements in that plan. If there are several versions, confirm which one to use.
 3. **Resume a build.** In a chat in the same project, tell the agent, “Resume [lab_id] in the Builder workspace at [path].” Use the build workspace path the agent previously gave you for that experiment. Check the current gate and pending task. See the [Builder gates in section 10](#builder-gates) for the checks and approvals.
 
+**If an attachment download fails with a DNS error**, and the plan came from this project, ask the agent to find the local handoff by design ID and revision. Give it the known `design_id`, revision and language, or the export folder you saved. Exports are under `handoffs/` in the state directory. Gate progress belongs to the Builder workspace. If you deleted that workspace, restore its backup to resume at the previous gate, or explicitly ask to start again at Gate 0 from the saved plan.
+
 **Save the details you’ll need to resume the build.** When you first enter Builder from a confirmed design, ask the agent, “Please list my design ID (`design_id`), build ID (`lab_id`), and the full path to this Builder workspace so I can resume next time.” If you start directly from an attachment, you only need to save the build ID and the full Builder workspace path.
 
 ### Open the project and check compilation at Gate 4
 
-1. **Open your experiment at Gate 4.** Once the agent reports that the scaffold is ready, choose **Projects → Add → Add project from disk** in the Hub. Select the `UnityProject` folder the agent gave you for this run. On Windows, use the short path it provides, as printed by the command below. Open the project with the Editor version installed in section 4. [Unity Hub project instructions](https://docs.unity.com/en-us/hub/projects-window-reference)
+1. **Open your experiment at Gate 4.** Once the agent reports that the scaffold is ready, choose **Projects → Add → Add project from disk** in the Hub. Select the `unity_editor_project` path the agent gives you. On Windows, select that short entry directly, even if the folder name looks like a string of random characters. Open the project with the Editor version installed in section 4. [Unity Hub project instructions](https://docs.unity.com/en-us/hub/projects-window-reference)
 2. **Check compilation.** Stay in Edit mode and wait for asset import and automatic C# compilation to finish. Open **Window → General → Console**. If the red error count is zero, report that result to the agent to continue Gate 4 acceptance. If there are errors, send the agent the full text of the first red error. You can leave Play and Build unused for this check.
 
 **Reopen the same project after restarting Windows.** When first setting up the project or migrating from the old Z: drive, save and close the old project. Run this command in PowerShell at the repository root. For a build created from Design, enter the build ID (`lab_id`) you saved above, for example `ece329_solenoid_current`. For a standalone Builder run, replace the example ID with the quoted full path of the Builder workspace containing `UnityProject`.
@@ -215,13 +217,15 @@ See the [Design stages in section 10](#design-stages) for what to review at each
 .\.venv\Scripts\python.exe emvr-lab-workflow/scripts/builder.py ece329_solenoid_current unity-project
 ```
 
-Copy the printed path and select **Projects → Add → Add project from disk** in Unity Hub. After a restart, open that same Hub entry. This persistent directory junction in your user profile points to the original project, preserving the scene and gate records. If several runs share a lab ID, rerun the command with the intended workspace path from the list.
+Copy the printed path and select **Projects → Add → Add project from disk** in Unity Hub. After a restart, open that same Hub entry. This persistent directory junction points to the original project and preserves its scene and gate records. Its default location is in your user profile. If several runs share a lab ID, rerun the command with the intended workspace path from the list.
+
+If entry creation fails, stay at the current gate. Run the command above in your own PowerShell at the repository root. If the default directory is unwritable, add `--entry-dir "SHORT_WRITABLE_LOCAL_DIRECTORY"` before the build ID or workspace path and reuse that directory. Save and close any project opened at the long path, then reopen it using the verified output.
 
 ### View the scene in the browser
 
 Save the lab scene with visible models in Unity. You can then close the editor and click **Unity 3D** in the progress page. The browser loads the exported geometry locally. Left-drag to orbit, scroll to zoom, or right-drag to pan. Pick a model in the scene or select it from the list, then click **Focus object** for a closer look. **Fit scene** restores the overview. Click **Workflow details** to return.
 
-The preview updates while the editor is open and shows the last saved version after it closes. It displays mesh geometry, base material colors and world transforms. Use Unity to inspect textures, custom shaders and VR interactions. When upgrading an older workspace, ask the agent to run the `unity-project` command above for that workspace, then open and save the lab scene once in Unity. The button stays disabled until the scene has exported geometry.
+The preview updates while the editor is open and shows the last saved version after it closes. It displays mesh geometry, base material colors and world transforms. Use Unity to inspect textures, custom shaders and VR interactions. New workspaces install the preview tools at Gate 4. If an older workspace needs them, ask the agent to install them at Gate 4 or before Gate 5A passes, then open and save the lab scene. Workspaces that have passed 5A retain the tools used for validation. The button stays disabled until the scene has exported geometry.
 
 ## 8. Manual operation and troubleshooting
 
@@ -235,6 +239,7 @@ The preview updates while the editor is open and shows the last saved version af
 
 - **Hub downloads stay queued or fail validation.** Check which item failed in the Hub download list. If only a language pack failed, finish installing the Editor and add the language pack later. If the Editor download repeatedly fails on Windows, use the standalone installer in [section 4](#install-unity) and register it through **Installs → Locate**.
 - **Unity reports `contains a locked Library`.** Close the Editor instance using that workspace, verify its process has exited, and retry from the Hub. If the project came from an archive and the lock persists, close the Editor, rename the project's `Library` directory to `Library.backup`, then reopen it and let Unity rebuild its import cache. Keep `Assets`, `Packages` and `ProjectSettings` in place.
+- **Gate 5A reports a hash mismatch for the imported `XR Interaction Setup.prefab` after saving.** Save the scene and close the Unity project. After [updating the workflow](#update), give the agent the original Builder workspace path and `lab_id` in a chat in the same project. Ask it to “Restore the XR import and retest at Gate 5A.” The agent checks the import receipt, backs up recognized input-reference changes, and restores the approved copy. Reopen the project using the returned entry and retest mouse and XR ray input. Other differences require maintainer review.
 
 <details>
 <summary>Optional: run the same workflow manually</summary>
@@ -339,7 +344,7 @@ Discuss the draft in the agent chat and follow the current stage on the progress
 
 In this version, Builder runs Gates 0 through 6 and then goes directly to Gate 8. There is no separate Gate 7.
 
-At each gate, check the current gate, verification results, and outstanding items reported by the agent. Each approval advances one gate. When a check requires Unity, use the project path supplied by the agent.
+At each gate, check the current gate, verification results, and outstanding items reported by the agent. When you approve a gate, the agent records the result and identifies the next gate. Your next message can supply materials or ask a question for that gate. When a check requires Unity, use the project path supplied by the agent.
 
 1. **Gate 0 · Verify the workspace.** Check the input plan and workspace and establish the baseline for protected files.
 2. **Gate 1 · Confirm requirements.** Review the build brief and supply any missing course, manual, or grading details together.

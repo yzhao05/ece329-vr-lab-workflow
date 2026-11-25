@@ -166,7 +166,7 @@ UnityProject/Assets/Generated/<lab_id>/ApprovedDependencies/
 
 ## Gate 4：纯脚手架编译
 
-生成：
+使用统一 Skill 时，从交付根运行 `python emvr-lab-workflow/scripts/builder.py "PACK" scaffold --lab-id LAB_ID`，将返回的 `unity_editor_project` 交给学生在 Unity Hub 打开。独立使用原生 Builder 包时，从短路径工作区运行以下命令：
 
 ```powershell
 python Tools/labflow/labflow.py scaffold --lab-id <lab_id>

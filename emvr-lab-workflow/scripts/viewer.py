@@ -16,11 +16,11 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
-from workspace import DEFAULT_STATE, ROOT, SNAPSHOT_VERSION, active_builder, dump, lock, native_path, read_builder_status, run_directory, valid_id, write_json
+from workspace import DEFAULT_STATE, ROOT, SNAPSHOT_VERSION, active_builder, dump, lock, missing_workspace_status, native_path, read_builder_status, run_directory, valid_id, write_json
 from scene_layout import scene_layout
 
 
-VIEWER_PROTOCOL = 11
+VIEWER_PROTOCOL = 12
 PREVIEW_ASSETS = {"scene-preview.js", "vendor/three-0.160.1/three.module.min.js", "vendor/three-0.160.1/OrbitControls.js"}
 WEB_ASSETS = {"index.html", "style.css", "stages.json", "viewer.js"} | PREVIEW_ASSETS
 
@@ -132,14 +132,19 @@ def handler(state, web, nonce):
                     if path == "_instance":
                         value = {"instance": nonce}
                     elif path.startswith("_session/"):
-                        entry = read_json(session_file(state, path.removeprefix("_session/")))
+                        registration = session_file(state, path.removeprefix("_session/"))
+                        entry = read_json(registration)
                         if "workspace" in entry:
                             pack = Path(entry["workspace"])
                             lab = entry["lab_id"]
                             initialized = native_path(pack / "LabSpecs" / lab / "workflow_state.json").is_file()
                             value = {"standalone": True, "builder": read_builder_status(pack, lab) if initialized else None}
                             if initialized:
+                                if not entry.get("initialized"):
+                                    write_json(registration, {**entry, "initialized": True})
                                 value["layout"] = scene_layout(pack, lab, geometry)
+                            elif entry.get("initialized"):
+                                value["builder"] = missing_workspace_status(lab)
                         else:
                             value = {"design_id": entry.get("design_id")}
                     elif path == "data/latest.json":

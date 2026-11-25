@@ -175,8 +175,12 @@ def test_finished_handoff(tmp_path):
     assert all((bundle / filename).read_bytes().startswith(b"%PDF") for filename in
                ("design.pdf", "builder-gate1-input.pdf"))
     (bundle / "design.pdf").unlink()
+    (bundle / "builder-gate1-input.pdf").write_bytes(b"%PDF-1.4\ninterrupted")
+    assert cli(tmp_path, "find-handoff", key, "--revision", str(exported["revision"]))["candidates"] == []
     assert cli(tmp_path, "export", key)["artifacts"] == str(bundle)
     assert (bundle / "design.pdf").read_bytes().startswith(b"%PDF")
+    assert (bundle / "builder-gate1-input.pdf").read_bytes().rstrip().endswith(b"%%EOF")
+    assert len(cli(tmp_path, "find-handoff", key, "--revision", str(exported["revision"]))["candidates"]) == 1
     machine_copy = bundle / "builder-gate1-input.json"
     approved_input = machine_copy.read_bytes()
     machine_copy.write_text('{"historical":"previous export"}', encoding="utf-8")
@@ -280,6 +284,31 @@ def test_finished_handoff(tmp_path):
         assert value["standalone"] is True and value["builder"]["current_gate"] == 1
         assert "workspace" not in value and "design_id" not in value
         assert value["layout"] == layout
+        # Simulate a partial restore. The standalone page must not revert to "waiting for a workspace".
+        record = pack / "LabSpecs" / lab_id / "workflow_state.json"
+        saved_record = record.with_suffix(".backup")
+        record.rename(saved_record)
+        assert get(standalone["url"], "_session/" + standalone["viewer_session"])["builder"]["stage"] == "workspace_missing"
+        assert cli(tmp_path, "show", key)["builder"]["stage"] == "workspace_missing"
+        assert "gate record is missing" in cli(tmp_path, "builder-init", key, "--rebuild-missing", ok=False)
+        saved_record.rename(record)
+
+    # A removed build does not remove its local handoff or the saved design.
+    pack.rename(pack.with_name("saved-run-backup"))
+    assert cli(tmp_path, "show", key)["builder"]["stage"] == "workspace_missing"
+    assert "--rebuild-missing" in cli(tmp_path, "builder-init", key, ok=False)
+    found = cli(tmp_path, "find-handoff", key, "--revision", str(exported["revision"]))
+    assert any(Path(c["folder"]).samefile(corrected) for c in found["candidates"])
+    assert not any(Path(c["folder"]).samefile(bundle) for c in found["candidates"])
+    incomplete = corrected.with_name(f"{exported['revision']}-interrupted-export")
+    shutil.copytree(corrected, incomplete)
+    (incomplete / "builder-gate1-input.pdf").write_bytes(b"")
+    assert cli(tmp_path, "find-handoff", key, "--revision", str(exported["revision"])) == found
+    assert not cli(tmp_path, "find-handoff", key, "--revision", "999999")["candidates"]
+    assert not pack.exists()
+    rebuilt = cli(tmp_path, "builder-init", key, "--rebuild-missing")
+    assert Path(rebuilt["builder_workspace"]).samefile(pack)
+    assert cli(tmp_path, "show", key)["builder"]["current_gate"] == 0
 
 
 def test_viewer_upgrades_old_snapshot_once_even_when_user_quotes_old_wording():

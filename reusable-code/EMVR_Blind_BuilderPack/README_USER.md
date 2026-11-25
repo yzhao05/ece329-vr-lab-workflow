@@ -343,7 +343,7 @@ AI 会说明：
 AI 会生成 Runtime 和 Editor Builder 的空结构，但不会提前加入完整领域算法。
 随后 AI 会给出详细 Unity 操作，例如：
 
-1. 打开 Unity 项目的 `UnityProject` 文件夹；
+1. 统一 Skill 运行时在 Unity Hub 打开 Agent 返回的 `unity_editor_project` 短入口；独立使用原生包时选择短路径下的 Unity 项目；
 2. 等待右下角编译图标停止；
 3. 通过 `Window > General > Console` 打开 Console；
 4. 点击 Console 左上角 **Clear**；

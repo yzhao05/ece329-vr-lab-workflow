@@ -60,7 +60,7 @@ archive before upload. Downloaded root folders may have a branch suffix;
 rename the extracted master to `EMVR_Blind_BuilderPack` before creating a run.
 See README_USER.md for the download/upload steps.
 
-Open `UnityProject/` in Unity. The local package dependency is self-contained
+When using the unified skill, open the verified `unity_editor_project` entry in Unity Hub at Gate 4. For an independent native run, use a short local project path. The local package dependency is self-contained
 and points only to `../LocalPackages/com.emvr.lab-common`.
 
 Unity MCP is currently disabled and is not used by the rebuild workflow. Its

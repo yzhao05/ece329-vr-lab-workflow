@@ -95,8 +95,7 @@ python .agents/skills/build-unity-vr-lab-blind/scripts/import_approved_asset_clo
 python .agents/skills/build-unity-vr-lab-blind/scripts/materialize_gate5_foundation.py --lab-id <lab_id>
 ```
 
-Generate only the Gate 4 scaffold, then require a clean Unity compile before
-adding domain logic:
+With the unified skill, generate the Gate 4 scaffold from the delivery root using `python emvr-lab-workflow/scripts/builder.py "PACK" scaffold --lab-id LAB_ID`. Open the returned `unity_editor_project` in Unity Hub and verify compilation before recording the result. The following commands are for an independent native pack in a short local workspace:
 
 ```powershell
 python Tools/labflow/labflow.py scaffold --lab-id <lab_id>

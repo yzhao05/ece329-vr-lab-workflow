@@ -14,7 +14,7 @@ acceptance or approval. Do not interview the current Lab during maintenance.
 Gate 8 is the manual-generation gate immediately after Gate 6 user review and
 acceptance. Keep its original number; do not add a duplicate gate or restore 7/9.
 Once valid Gate 6 checks and the user's clear progression reply are recorded,
-begin 8A without asking for another permission to start authoring. Gate 8 still
+start 8A on the next user message. The recorded Gate 6 approval authorizes the work. Gate 8 still
 requires final user confirmation after both 8A and 8B. Before Gate 6 acceptance,
 collect evidence and metadata only; do not generate the formal student manual.
 

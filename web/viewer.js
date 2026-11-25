@@ -215,6 +215,7 @@ function drawBuilder(b) {
   const current = recheck ?? b?.current_gate;
   const approved = Array.isArray(b?.approved_gates) ? new Set(b.approved_gates) : null;
   find("builder").textContent = !b ? t("Waiting for a Builder workspace","等待构建工作区") :
+    b.stage === "workspace_missing" ? t("Original Builder workspace missing", "原 Builder 工作区缺失，待恢复") :
     b.migration_required ? t("Legacy Builder workspace requires migration", "旧版 Builder 工作区需要迁移") :
     recheck === 6 ? t("Gate 6 · Scene acceptance must be renewed", "Gate 6 · 场景需要重新验收") :
     recheck === 8 ? t("Gate 8 · Handbooks require revalidation", "Gate 8 · 手册需要重新验证") :

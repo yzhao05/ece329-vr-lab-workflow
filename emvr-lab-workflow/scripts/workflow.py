@@ -61,7 +61,18 @@ def design_status_line(design, reply):
     return f"Design · Gate {group['workflow_stage_number']}/{group['workflow_stage_count']} · {' / '.join(titles)} · {status}"
 
 
-def handoff(engine, design, state, start_builder, language=None, translations=None):
+def complete_pdf(path):
+    if not path.is_file():
+        return False
+    with path.open("rb") as stream:
+        if stream.read(5) != b"%PDF-":
+            return False
+        size = stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, size - 1024))
+        return stream.read().rstrip().endswith(b"%%EOF")
+
+
+def handoff(engine, design, state, start_builder, language=None, translations=None, rebuild_missing=False):
     if design.get("guided_export_ready"):
         raise ValueError("这份历史设计已归档。要生成 Builder 输入，请在统一工作流中创建并确认 VR 方案。")
     if not (design["report_ready"] and design["builder_input_ready"]):
@@ -91,7 +102,7 @@ def handoff(engine, design, state, start_builder, language=None, translations=No
         edition = hashlib.sha256(dump(contract).encode("utf-8")).hexdigest()[:12]
         folder = folder.with_name(folder.name + "-" + edition)
     pdfs = {"design.pdf": "design", "builder-gate1-input.pdf": "builder"}
-    missing_pdfs = [name for name in pdfs if not (folder / name).is_file()]
+    missing_pdfs = [name for name in pdfs if not complete_pdf(folder / name)]
     if missing_pdfs:
         from export_language import render_bundle
         rendered = render_bundle(engine, session, contract, language, translations)
@@ -116,7 +127,13 @@ def handoff(engine, design, state, start_builder, language=None, translations=No
     # Return the same long-path-capable root that Builder uses internally.
     # Even when the workspace itself is short enough, files below it may not be.
     pack = native_path(run_directory(state, key, stamp["fingerprint"]))
+    marker_path = state / "runs" / key / "active.json"
     if not pack.exists():
+        if marker_path.is_file() and not rebuild_missing:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker["fingerprint"] == stamp["fingerprint"]:
+                raise ValueError(f"Original Builder workspace missing: {pack}. Restore the workspace to resume; "
+                                 "to start again at Gate 0, use builder-init with --rebuild-missing.")
         pack.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=pack.parent) as tmp:
             staged = Path(tmp) / BASE.name
@@ -133,12 +150,14 @@ def handoff(engine, design, state, start_builder, language=None, translations=No
                 shutil.copy2(folder / name, inputs / name)
             publish_directory(staged, pack)
     inputs = pack / "LabSpecs" / lab["lab_id"] / "design-input"
+    if not (inputs.parent / "workflow_state.json").is_file():
+        raise ValueError(f"Builder workspace exists but its gate record is missing. Restore the backup for {pack}.")
     for name in (*pdfs, contract_name):
         if not (inputs / name).is_file():
             raise ValueError(f"Saved Builder input is missing: {inputs / name}")
     result["builder_inputs_match_export"] = all(
         (inputs / name).read_bytes() == (folder / name).read_bytes() for name in (*pdfs, contract_name))
-    write_json(state / "runs" / key / "active.json", {"fingerprint": stamp["fingerprint"], "lab_id": lab["lab_id"]})
+    write_json(marker_path, {"fingerprint": stamp["fingerprint"], "lab_id": lab["lab_id"]})
     result["design_id"] = key
     result["lab_id"] = lab["lab_id"]
     result["builder_workspace"] = str(pack)
@@ -152,6 +171,9 @@ def parse_args():
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--web-dir", type=Path, default=ROOT / "web", help="Static viewer root to update")
     commands = parser.add_subparsers(dest="cmd", required=True)
+    lookup = commands.add_parser("find-handoff", help="List local export bundles for an exact design revision")
+    lookup.add_argument("id", type=valid_id)
+    lookup.add_argument("--revision", type=int, required=True)
     create = commands.add_parser("create")
     create.add_argument("idea")
     create.add_argument("--viewer-session", help="Bind the page opened for this new design")
@@ -168,6 +190,9 @@ def parse_args():
     for name in ("show", "feedback", "retrospective", "export", "builder-init"):
         entry = commands.add_parser(name)
         entry.add_argument("id", type=valid_id)
+        if name == "builder-init":
+            entry.add_argument("--rebuild-missing", action="store_true",
+                               help="Start a fresh run when the previously registered workspace was removed")
         if name in ("export", "builder-init"):
             entry.add_argument("--language", choices=["en", "zh"])
             entry.add_argument("--translations", type=Path)
@@ -193,6 +218,23 @@ def main():
             raise ValueError("请输入检索词。")
         return search(ROOT, args.query, args.scope)
     state = args.state_dir.resolve()
+    if args.cmd == "find-handoff":
+        matches = []
+        folder = native_path(state / "handoffs" / args.id)
+        for contract in sorted(folder.glob(f"{args.revision}-*/builder-gate1-input.json")):
+            try:
+                doc = json.loads(contract.read_text(encoding="utf-8-sig"))["document"]
+                stamp = doc["source_design"]
+                if doc["source_design_id"] != args.id or stamp["revision"] != args.revision:
+                    continue
+                fingerprint = stamp["fingerprint"]
+                if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint):
+                    continue
+                if all(complete_pdf(contract.parent / name) for name in ("design.pdf", "builder-gate1-input.pdf")):
+                    matches.append({"folder": str(contract.parent), "fingerprint": fingerprint})
+            except (KeyError, TypeError, ValueError, FileNotFoundError, IsADirectoryError):
+                continue
+        return {"design_id": args.id, "revision": args.revision, "candidates": matches}
     generator = HostAgentGenerator() if args.provider == "host" else None
     engine = AgentWorkflowEngine(generator=generator, store=SQLiteSessionStore(state / "design.sqlite3", session_ttl_days=None))
     engine.project_id = os.environ.get("ECE329_PROJECT_ID", "default").strip() or "default"
@@ -269,7 +311,8 @@ def main():
         design = engine.get_design(key)
         result = {k: reply[k] for k in AGENT_FIELDS if k in reply}
         if args.cmd in {"export", "builder-init"}:
-            result.update(handoff(engine, design, state, args.cmd == "builder-init", args.language, args.translations))
+            result.update(handoff(engine, design, state, args.cmd == "builder-init", args.language, args.translations,
+                                  rebuild_missing=getattr(args, "rebuild_missing", False)))
         view = project_view(state, design)
         result["status_line"] = (view["builder"]["status_line"] if args.cmd in {"show", "builder-init"} and view.get("builder")
                                  else design_status_line(design, reply))

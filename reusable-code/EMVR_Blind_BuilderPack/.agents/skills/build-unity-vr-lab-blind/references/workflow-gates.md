@@ -27,7 +27,7 @@ Use one atomic conversation work package per gate:
 2. submit one completion report with evidence;
 3. request approval without requiring a fixed reply phrase;
 4. make no next-gate changes while approval is pending;
-5. after approval, record it and execute only the immediately following gate.
+5. record the approval and report the new gate. Start its work on the next user message.
 
 Missing input or a defect produces one consolidated blocker report and keeps
 the same gate open. Rejection or requested changes also reopen the same gate.
@@ -226,7 +226,7 @@ This is the manual-generation gate requested after experiment review. Entry is
 Gate 6's recorded user acceptance of the verified current version, not merely a
 compile result. Use the attached-reference roles, exact naming and six-section
 student requirements in [student-lab-manual.md](student-lab-manual.md). Begin 8A
-after that acceptance without a second start-authoring approval; request final
+on the next user message after that acceptance. Ask for final
 Gate 8 confirmation only after both existing steps below pass.
 
 Follow [developer-handbooks.md](developer-handbooks.md). 8A generates independent

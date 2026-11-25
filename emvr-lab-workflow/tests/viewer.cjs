@@ -68,6 +68,9 @@ const server = http.createServer((req, res) => {
     view.builder = {current_gate:1,current_gate_name:"Brief confirmed",approved_gates:[0],gate_ready_for_approval:true};
     await page.waitForFunction(() => document.querySelector("#gates [aria-current=step]").textContent.includes("待确认"));
     assert.match(await page.locator("#gates li").first().innerText(), /已确认/);
+    view.builder = {current_gate:null, approved_gates:[], stage:"workspace_missing"};
+    await page.waitForFunction(() => document.querySelector("#builder").textContent.includes("待恢复"));
+    assert.equal(await page.locator("#gates [aria-current=step]").count(), 0);
     view.builder = {current_gate:8, approved_gates:[0,1,2,3,4,5,6,8], accepted:true, retrospective_pending:true};
     await page.waitForFunction(() => document.querySelector("#builder").textContent.includes("待归档复盘"));
     assert.match(await page.locator("#gates li").last().innerText(), /已确认/);

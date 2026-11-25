@@ -43,10 +43,9 @@ Interpret approval by intent, in the context of the currently completed gate.
 Treat an unambiguous affirmative or progression message as approval, including
 `继续`, `通过`, `同意`, `OK`, `go ahead`, `proceed`, `continue`, `next step`,
 and equivalent wording in the user's language.
-The user does not need to name the gate or use a fixed phrase. A message may
-both approve the current gate and ask the Agent to perform the next gate; first
-record the approval, then perform only that immediately following gate in the
-same response.
+The user does not need to name the gate or use a fixed phrase. When a message approves a gate and supplies instructions for the next one,
+record the approval and acknowledge those instructions. Start the next gate
+on the next user message, using the instructions already supplied.
 
 Do not treat silence, a successful tool log, the Agent's own judgment, a pure
 question (for example `Is it okay to proceed?`), a negated instruction (for example
@@ -348,11 +347,13 @@ python Tools/labflow/labflow.py approve-gate --lab-id <lab_id> --gate 3 --note "
 
 ## Scaffold, compile, then implement
 
-Run:
+With the unified skill, run this command from the delivery root:
 
 ```powershell
-python Tools/labflow/labflow.py scaffold --lab-id <lab_id>
+python emvr-lab-workflow/scripts/builder.py "PACK" scaffold --lab-id LAB_ID
 ```
+
+Give the user the verified `unity_editor_project` for Unity Hub. If entry creation fails, resolve it before asking the user to open Unity. Independent native pack users can run `python Tools/labflow/labflow.py scaffold --lab-id <lab_id>` from their short local workspace.
 
 Keep Gate 4 limited to the generated runtime/editor skeleton. Before adding
 domain logic, note that the runtime skeleton deliberately makes no Common or
@@ -419,6 +420,8 @@ Finish with the manual Lighting-window handoff; do not automatically bake in Bui
 Keep a generation-only recovery menu using the same adapter/save protection.
 Declare generated `UnityProject/Assets/Scenes/<lab_id>/` lighting output in the
 implementation handoff. Build success is not GI completion or Gate 5 acceptance.
+
+For a copy-hash mismatch on the imported `XR Interaction Setup.prefab`, save the scene and close that Unity project. In the unified distribution, run `python emvr-lab-workflow/scripts/builder.py "PACK" repair-xr-import --lab-id LAB_ID` from the distribution root with this run’s pack and lab ID. This restores recognized input-reference rewrites from the approved source and retains the old copy under `BuildEvidence/<lab_id>/xr-import-recovery/`. Reopen through the verified project entry, retest mouse and XR ray interaction, save, and rerun the normal Gate 5 checks before recording a pass. Escalate other differences for review.
 
 Every Gate 5A user-facing reply must include this ordered lighting procedure:
 
@@ -548,7 +551,7 @@ and actions to avoid. Never use a shorthand such as `run Test Runner`, `Clear
 Console`, `open Game View`, or `run the Builder` without those details, and do
 not wait for the user to ask where a Unity feature is located.
 
-Ask the user to open `UnityProject/`, then provide detailed instructions to:
+For the unified workflow, open the verified Hub entry returned by `builder.py "PACK" unity-project`. For a standalone pack outside the unified skill, use a short local project path. Then provide detailed instructions to:
 
 1. wait for compilation and clear/report relevant Console errors;
 2. run the generated `Tools > EMVR > Labs > Build ...` menu;
