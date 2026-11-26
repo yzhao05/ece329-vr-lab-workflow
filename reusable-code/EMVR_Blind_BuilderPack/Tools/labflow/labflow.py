@@ -249,14 +249,6 @@ def native_path(path: Path) -> str:
     return "\\\\?\\" + absolute
 
 
-def normal_path(path: str) -> Path:
-    if os.name == "nt" and path.startswith("\\\\?\\UNC\\"):
-        return Path("\\\\" + path[8:])
-    if os.name == "nt" and path.startswith("\\\\?\\"):
-        return Path(path[4:])
-    return Path(path)
-
-
 def fs_exists(path: Path) -> bool:
     return os.path.exists(native_path(path))
 
@@ -268,8 +260,10 @@ def fs_is_file(path: Path) -> bool:
 def iter_files(path: Path):
     if not fs_exists(path):
         return
-    for directory, _subdirectories, files in os.walk(native_path(path)):
-        display_directory = normal_path(directory)
+    scan_root = Path(native_path(path))
+    for directory, _subdirectories, files in os.walk(scan_root):
+        # Scan with long-path support but keep the path form supplied by the caller.
+        display_directory = path / Path(directory).relative_to(scan_root)
         for file_name in files:
             yield display_directory / file_name
 

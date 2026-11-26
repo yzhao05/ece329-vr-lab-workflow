@@ -47,6 +47,7 @@ def test_reopening_and_upgrading_editor_tools(tmp_path, gate, foundation, allowe
     assert (setup.returncode == 0) == allowed, setup.stderr
     assert (assets / "EmvrWorkflowPreview/Editor/EmvrSceneLayoutPreview.cs").is_file() == allowed
     assert (assets / "EmvrImportProtection/Editor/EmvrXrImportSaveGuard.cs").is_file() == allowed
+    assert (assets / "EmvrImportProtection/Editor/EmvrHeadTrackingCheck.cs").is_file() == allowed
 
 
 def test_ambiguous_lab_requires_explicit_workspace(tmp_path):

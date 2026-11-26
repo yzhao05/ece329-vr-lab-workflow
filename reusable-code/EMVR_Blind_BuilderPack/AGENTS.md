@@ -163,19 +163,16 @@ Unity MCP is disabled for this workflow. Do not call Unity MCP tools or its
 generated Skills, add its package dependency, restore its active NuGet DLLs, or
 set `UNITY_MCP_READY`. Hand Unity-owned actions and observations to the user.
 
-Every Gate 5A user-facing reply must include this ordered lighting procedure:
+For the initial Gate 5A foundation build, give these steps in order:
 
 1. Exit Play Mode.
-2. Run the current Lab's Build menu once. For `ece329_electric_field_0`:
-   `Tools > EMVR > Labs > Build Ece329 Electric Field 0`.
+2. Run the current lab's generated Build menu once. Give the exact menu name from its scene builder.
 3. `Window > Rendering > Lighting > Generate Lighting, wait, then save.`
 
-Use the actual generated Build menu name for another Lab. This supersedes the
-older lighting-only one-line handoff and the instruction to omit Build when a
-settings reference exists. Keep the normal reply concise; keep asset/reference
-checks internal and add diagnostics only for an actual failure or user request.
-Generate after that Build and save after completion. Do not ask for another Build
-after generation unless content changes; a later Build requires regeneration.
+If Build already succeeded for this scene, resume at the first outstanding step.
+After lighting has been generated, saved and verified for the current build,
+carry that result forward when diagnosing input or camera issues. A later
+rebuild or a change that invalidates lighting requires fresh lighting evidence.
 
 For other Unity actions,
 assume the user has never used Unity. Every handoff must give a numbered click

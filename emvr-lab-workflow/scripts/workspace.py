@@ -91,7 +91,10 @@ def builder_command(pack, *args):
     script = pack / "Tools/labflow/labflow.py"
     # Previously published runs freeze their own tools at Gate 0. Use the
     # compatible reader for that exact release without rewriting frozen bytes.
-    if hashlib.sha256(script.read_bytes()).hexdigest() == "d86e54ca5488871ac79a6921c17efcd751d6c086fdcf8d86e5e6980a174c19f6":
+    if hashlib.sha256(script.read_bytes()).hexdigest() in {
+        "d86e54ca5488871ac79a6921c17efcd751d6c086fdcf8d86e5e6980a174c19f6",
+        "1a35f936eebcba80e68d9e82da4ef3fbe3765ccb8f20510547dc7ec81c1cfbaa",
+    }:
         script = BASE / "Tools/labflow/labflow.py"
     return [sys.executable, str(script), "--project-root", str(pack), *args]
 
@@ -237,6 +240,14 @@ def builder_progress(data):
 
 
 def unified_builder_status(pack, data):
+    # Native status is also used by standalone packs. In a unified run its
+    # recovery instructions must go through the compatibility dispatcher.
+    native_cli = "python Tools/labflow/labflow.py "
+    host_cli = 'python emvr-lab-workflow/scripts/builder.py "PACK" '
+    if "next_action" in data:
+        data["next_action"] = data["next_action"].replace(native_cli, host_cli)
+    if "gate_blockers" in data:
+        data["gate_blockers"] = [item.replace(native_cli, host_cli) for item in data["gate_blockers"]]
     if data.get("workflow_complete"):
         lab_id = data["lab_id"]
         rel = recap_path(pack, lab_id, data)

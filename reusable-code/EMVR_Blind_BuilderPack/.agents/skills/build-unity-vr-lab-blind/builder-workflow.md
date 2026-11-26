@@ -423,19 +423,18 @@ implementation handoff. Build success is not GI completion or Gate 5 acceptance.
 
 For a copy-hash mismatch on the imported `XR Interaction Setup.prefab`, save the scene and close that Unity project. In the unified distribution, run `python emvr-lab-workflow/scripts/builder.py "PACK" repair-xr-import --lab-id LAB_ID` from the distribution root with this run’s pack and lab ID. This restores recognized input-reference rewrites from the approved source and retains the old copy under `BuildEvidence/<lab_id>/xr-import-recovery/`. Reopen through the verified project entry, retest mouse and XR ray interaction, save, and rerun the normal Gate 5 checks before recording a pass. Escalate other differences for review.
 
-Every Gate 5A user-facing reply must include this ordered lighting procedure:
+If the simulated HMD rotation changes in Input Debugger while Game view stays fixed, inspect the active rendering camera and its enabled Input System Tracked Pose Driver. In the unified workflow use **Tools → EMVR → Diagnostics → Check Head Tracking** and read the Console. The expected actions are `XRI Head/Position`, `Rotation` and `Tracking State` on that map. For missing references, compare the scene instance with the imported XR Rig, check the imported actions and their metadata against the import receipt, and reimport the verified input actions before the rig and setup prefabs in Edit Mode. For resolved but disabled actions, inspect the Input Action Manager during Play. If the camera transform rotates, check which camera renders Game view. Correct lab-owned scene generation errors and rerun the same runtime check. Preserve the approved prefab bytes. Report simulated head tracking as pending until Game view follows the head, even when mouse dragging passes.
+
+For the initial Gate 5A foundation build, give these steps in order:
 
 1. Exit Play Mode.
-2. Run the current Lab's Build menu once. For `ece329_electric_field_0`:
-   `Tools > EMVR > Labs > Build Ece329 Electric Field 0`.
+2. Run the current lab's generated Build menu once. Give the exact menu name from its scene builder.
 3. `Window > Rendering > Lighting > Generate Lighting, wait, then save.`
 
-Use the actual generated Build menu name for another Lab. This supersedes the
-older lighting-only one-line handoff and the instruction to omit Build when a
-settings reference exists. Keep the normal reply concise; keep asset/reference
-checks internal and add diagnostics only for an actual failure or user request.
-Generate after that Build and save after completion. Do not ask for another Build
-after generation unless content changes; a later Build requires regeneration.
+If Build already succeeded for this scene, resume at the first outstanding step.
+After lighting has been generated, saved and verified for the current build,
+carry that result forward when diagnosing input or camera issues. A later
+rebuild or a change that invalidates lighting requires fresh lighting evidence.
 
 For the observed native workflow=0 import mismatch, use reuse-policy's current-scene
 execution adapter: clone via Unity's native APIs into the declared Lab lighting output,

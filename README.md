@@ -241,6 +241,8 @@ Builder 工作区已带有项目的 XR 设置。使用 Builder 时，在 Gate 5A
 
 - **Hub 一直排队或提示下载校验失败**。先在 Hub 的下载列表查看失败项。若只有语言包失败，可先完成编辑器安装，再补装语言包。若编辑器本身反复失败，Windows 用户可以使用[第 4 节](#install-unity)的独立安装程序，再用 **Installs → Locate** 登记。
 - **打开工程时提示 `contains a locked Library`**。先关闭已打开该工作区的 Unity 编辑器，确认相关进程已退出，再从 Hub 重试。如果是解压得到的工程且仍提示锁定，关闭编辑器，把该工程里的 `Library` 改名为 `Library.backup`，重新打开并等待 Unity 重建导入缓存。保留 `Assets`、`Packages` 和 `ProjectSettings`。
+- **首次保存 Gate 0 基线时报 Windows 路径错误。** 按第 9 节更新后，把原 Builder 工作区路径和 `lab_id` 发给 Agent，请它在同一 Gate 重试基线核验并处理原阻塞记录。
+- **模拟头显旋转时 Game 视角不动。** 在 Play Mode 选 **Tools → EMVR → Diagnostics → Check Head Tracking**。Console 会列出主相机和三个头部动作。如果出现 `Missing` 或动作未启用，把对应行发给 Agent。旧工程缺少此菜单时可按第 7 节的条件补装编辑器工具。照明已在当前构建保存并核验时，沿用已有结果，直接检查视角。
 - **Gate 5A 保存后提示 `XR Interaction Setup.prefab` 导入副本哈希不同。** 保存场景并关闭该 Unity 工程。按[第 9 节](#update)更新后，在同一项目的聊天中提供原 Builder 工作区路径和 `lab_id`，请 Agent “恢复 XR 导入副本，在 Gate 5A 复测”。Agent 会核对导入记录、备份可识别的改写并恢复批准版本。用 Agent 给出的入口重开工程，复测鼠标和 XR 射线交互。其他差异交给维护者检查。
 
 <details>

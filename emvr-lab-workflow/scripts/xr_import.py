@@ -25,18 +25,23 @@ def checked(path, pack):
 
 
 def install_guard(pack):
-    script = GUARD / "Editor/EmvrXrImportSaveGuard.cs"
-    paths = (GUARD.with_suffix(".meta"), GUARD / "Editor.meta", script.with_suffix(".cs.meta"), script)
-    missing = {}
+    paths = [GUARD.with_suffix(".meta"), GUARD / "Editor.meta"]
+    for name in ("EmvrXrImportSaveGuard.cs", "EmvrHeadTrackingCheck.cs"):
+        script = GUARD / "Editor" / name
+        paths.extend((script.with_suffix(".cs.meta"), script))
+    updates = {}
     for relative in paths:
         target = checked(pack / relative, pack)
         expected = (BASE / relative).read_text(encoding="utf-8")
         if target.exists():
-            if target.read_text(encoding="utf-8") != expected:
-                raise ValueError(f"Existing XR save guard differs from this package: {target}")
-        else:
-            missing[target] = expected
-    for target, expected in missing.items():
+            current = target.read_text(encoding="utf-8")
+            if current == expected:
+                continue
+            old_head_check = "81c3d5693fc2d4f4d917c96953e6a00cffb1331315317f6d507bd6dd81691984"
+            if target.name != "EmvrHeadTrackingCheck.cs" or hashlib.sha256(current.encode()).hexdigest() != old_head_check:
+                raise ValueError(f"Existing XR editor tool differs from this package: {target}")
+        updates[target] = expected
+    for target, expected in updates.items():
         write_text(target, expected)
 
 

@@ -110,6 +110,17 @@ def add_maintenance_fixture(root: Path, state: dict) -> Path:
 
 
 class LabflowTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows extended path namespaces")
+    def test_extended_and_plain_roots_produce_identical_baselines(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "Tools").mkdir()
+            (root / "Tools/example.py").write_bytes(b"# tool")
+            plain = labflow.collect_protected_files(root, ["Tools", "Tools/example.py"], [])
+            extended = Path(labflow.native_path(root))
+            self.assertEqual(labflow.collect_protected_files(extended, ["Tools", "Tools/example.py"], []), plain)
+            self.assertEqual(set(plain["files"]), {"Tools/example.py"})
+
     def full_lighting_fixture(self, root):
         files = []
         for relative in sorted(labflow.LIGHTING_ADDITIONS - {"Policies/emvr-room-lighting.json"}):
@@ -856,7 +867,7 @@ class LabflowTests(unittest.TestCase):
             state["evidence"]["boundary_verifier"] = "passed"
             self.assertIn("capture-gate0-baseline", labflow.next_action(Path.cwd(), state))
 
-    def test_gate_zero_baseline_allows_only_current_gate10_lesson(self) -> None:
+    def test_gate_zero_baseline_allows_current_lab_recovery_lesson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lessons = root / "KnowledgeBase" / "rebuild-lessons"
@@ -877,7 +888,7 @@ class LabflowTests(unittest.TestCase):
                 baseline = labflow.capture_gate0_protected_baseline(
                     root, "lab_example", state
                 )
-            (lessons / "lab_example.md").write_text("Gate 10 lesson\n", encoding="utf-8")
+            (lessons / "lab_example.md").write_text("Current lab recovery lesson\n", encoding="utf-8")
             self.assertEqual(labflow.protected_baseline_errors(root, state), [])
             baseline.write_text("{}\n", encoding="utf-8")
             self.assertIn(

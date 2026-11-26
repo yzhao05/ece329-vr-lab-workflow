@@ -57,6 +57,12 @@ Codex 每次启用本 Skill，先打开与任务对应的实时网页，再开�
 
 ## 进入或续接 Builder
 
+**当前关卡内可自主修复。** 命令的工作目录、参数或路径写法有误，或本实验新生成的脚本有编译、组件连接等可逆错误时，主 Agent 可自行定位、修正并重跑原检查，再向用户报告改动与证据。运行包里的受保护工具有已发布修复时，先从更新后的交付根用 `builder.py "PACK"` 转发原命令。只有修复涉及受保护源文件、覆盖已有实验、改变已确认需求或确实需要用户操作时，才交回对应决定。保留当前 Gate、原始哈希与用户批准记录。
+
+Gate 0 首次保存基线若遇到 Windows `relative_to` 路径前缀错误，读取原工作区的 `status`，尚无已登记基线时用 `builder.py "PACK" capture-gate0-baseline --lab-id LAB_ID` 重试。对已有基线做完整性复查。若已登记阻塞，再据实际结果用 `retrospective --resolve` 关闭同一事件，处理其余 Gate 0 待办。
+
+Gate 5A 若模拟头显的姿态在变、Game 视角仍不动，先检查正在渲染的主相机。可用 **Tools → EMVR → Diagnostics → Check Head Tracking** 查看三个输入动作的实际名称及 Play Mode 启用状态。具体复查顺序见 Builder 规程；用户已提供的 Input Debugger 观察直接沿用。旧工作区也按实际进度排错：当前构建的照明已经生成、保存并核验时，直接检查输入或相机；重建场景或照明失效时再生成。
+
 Gate 6 验收后，Gate 8A 先为本实验制作学生手册和开发者手册。Gate 8B 增补项目总手册时，优先使用用户指定的当前原稿；首次制作可使用交付根自带的 `knowledge/sources/EM VR Lab Development Handbook.docx`。从交付根解析为绝对路径，作为 `handbooks.py stage-master --source` 的输入。若本项目已有增补后的总手册，续用该版，保留既有章节。增补文件写入当前工作区的 `BuildEvidence/<lab_id>/handbooks/project-master/`，保留输入原稿。
 
 用 `builder.py "PACK" approve-gate --lab-id LAB_ID --gate N --note "用户原话" --turn-id TURN_ID` 记录当前 Gate 的批准。原生规程中所有 approve-gate 示例在统一 Skill 中采用此入口。Gate 8 还须加下文的 `--notes` 参数，在这次批准中完成复盘归档。Gate 6 通过这个入口同步发布 Gate 5B 已选源码，核对返回的 `archive`。若归档提示同一验收指纹下的文件内容冲突，先对照已验收版本核对两份文件，再恢复归档。若原工作区已记录 Gate 6 验收但复制失败，按 Builder 规程重试 `code_archive.py publish`，沿用原验收。一次集中询问本关缺少的材料或验收证据。状态查询本身不消耗一次批准。
@@ -70,13 +76,13 @@ Windows 下 Gate 4 必须通过交付根的 `builder.py "PACK" scaffold --lab-id
 
 Gate 5A 若已导入的 `XR Interaction Setup.prefab` 报副本哈希不符，请用户保存场景并关闭该工程。包括旧工作区在内，从更新后的交付根执行 `python emvr-lab-workflow/scripts/builder.py "PACK" repair-xr-import --lab-id LAB_ID`。恢复成功后用短入口重开，复测鼠标和 XR 射线交互，保存场景并重跑本关校验。命令拒绝的差异保留给维护者检查。
 
-详细规程集中在 [builder-workflow.md](../reusable-code/EMVR_Blind_BuilderPack/.agents/skills/build-unity-vr-lab-blind/builder-workflow.md)。选定工作区后读取**该工作区内**的同名文件，从 **Create or resume a run** 及当前 Gate 开始。该文件还说明主 Agent 应在何时从交付根调用代码归档工具，固定目标为 `reusable-code/newcode/`。
+详细规程集中在 [builder-workflow.md](../reusable-code/EMVR_Blind_BuilderPack/.agents/skills/build-unity-vr-lab-blind/builder-workflow.md)。选定工作区后读取**该工作区内**的同名文件，从 **Create or resume a run** 及当前 Gate 开始。续接旧工作区时，沿用其中记录的验收要求与证据；兼容命令和 Gate 5A 排错步骤以更新后交付根的说明为准。规程还说明何时从交付根调用代码归档工具，固定目标为 `reusable-code/newcode/`。
 
 | 触发条件 | 所需输入 | 执行步骤 | 成功后的动作 | 失败后的处理 |
 | --- | --- | --- | --- | --- |
 | 构建在本 Skill 中已确认的设计 | `design_id`、已确认版本和交接语言 | 打开该设计的页面，核对导出就绪状态，运行 `workflow.py builder-init DESIGN_ID`，语言覆盖与翻译重试方式同导出。核对 `revision`、`builder_inputs` 与目标版本 | 沿用设计标签页，进入返回的 `builder_workspace`，以工作区 `LabSpecs/<lab_id>/design-input/` 中该版 PDF 和 JSON 为依据，查询当前 Gate | 未就绪则返回原设计；指定的是其他修订时先澄清版本。重试时沿用相同设计和版本。已建工作区保留建档时的输入语言 |
 | 用户已有外部方案，只想搭建 | 用户提供的方案文件或正文、所选版本、实验标识及目标工作区 | 有多个版本先请用户指定。按规程选定独立工作区和 `lab_id`，打开其 Builder 页，以指定方案作为需求依据。按规程建档或续接。新实验使用 integrated-development；明确要求盲重建才走 blind-rebuild。手册语言可在原生 `new` 指定 `--manual-language` | 从交付根执行 `python emvr-lab-workflow/scripts/builder.py "PACK" status --lab-id LAB_ID`，说明采用的版本、当前 Gate、待确认事项，直接与用户讨论构建 | 缺少文件、版本或关键要求时仅追问缺项。在本路径中保持 Builder 身份，不为附件创建 Design 会话 |
-| 继续已有 Builder | 已关联的设计编号，或工作区与 `lab_id` | 关联设计打开设计页；独立运行打开绑定工作区与 `lab_id` 的页面。在原工作区运行上述 `status` | 依据实际状态从当前 Gate 和待确认项继续 | 有多个工作区或编号时先让用户选择；状态读取失败时核对原路径和标识，再重试 |
+| 继续已有 Builder | 已关联的设计编号，或工作区与 `lab_id` | 关联设计打开设计页；独立运行打开绑定工作区与 `lab_id` 的页面。从交付根运行上述 `status`，传入原工作区完整路径和 `lab_id` | 依据实际状态从当前 Gate 和待确认项继续 | 有多个工作区或编号时先让用户选择；状态读取失败时核对原路径和标识，再重试 |
 
 从附件直接搭建时，优先读取附件的本地原件或用户指定的交接目录。如果只读到了预览，但其中有设计编号和版本，可在同一状态目录运行 `workflow.py find-handoff DESIGN_ID --revision N` 查找本地导出。如果项目解释器已失效，可先在所用状态目录的 `handoffs/<design_id>/` 中核对指定版本的两份 PDF 和 Builder JSON，再按 README 第 2 节修复环境。核对版本、指纹、语言及附件内容；无法确认与用户指定的附件一致或存在多个可能版本时，请用户指定原件路径。此查询不创建构建，也不需要下载附件。若已删除旧构建，告知用户旧 Gate 进度需从备份恢复；用户明确要求从 Gate 0 重建关联设计时，运行 `workflow.py builder-init DESIGN_ID --rebuild-missing`。从独立附件搭建时，按独立 Builder 规程新建。
 

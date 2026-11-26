@@ -213,6 +213,12 @@ def test_finished_handoff(tmp_path):
     assert (pack / "UnityProject/LocalPackages/com.emvr.lab-common/package.json").is_file()
     assert not (pack / "KnowledgeBase/legacy-lab-specific-summaries").exists()
     assert cli(tmp_path, "show", key)["builder"]["current_gate"] == 0
+    raw_status = subprocess.check_output(
+        [sys.executable, str(SKILL / "scripts/builder.py"), str(pack), "status", "--lab-id", lab_id],
+        encoding="utf-8",
+    )
+    blockers = json.loads(raw_status)["gate_blockers"]
+    assert any('builder.py "PACK" capture-gate0-baseline' in item for item in blockers)
     # An older running pack can predate the corrected export. Its inputs
     # are authoritative until the user chooses which edition to build.
     machine_copy.write_text('{"historical":"previous export"}', encoding="utf-8")
